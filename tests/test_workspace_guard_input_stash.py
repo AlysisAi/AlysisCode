@@ -212,7 +212,8 @@ def test_run_tui_initial_input_text_prefills(monkeypatch):
     with create_pipe_input() as pipe:
 
         def feed() -> None:
-            deadline = time.monotonic() + 3.0
+            # Returns as soon as the TUI exists; the bound only limits a failure.
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 buffer = captured.get("input_buffer")
                 if buffer is not None:
@@ -223,17 +224,23 @@ def test_run_tui_initial_input_text_prefills(monkeypatch):
                     return
                 time.sleep(0.01)
             feeder_errors.append("input buffer never captured")
-            pipe.send_text("\x04")
+            # Closing the input ends the TUI even with the prefilled text in it (Ctrl-D does not).
+            pipe.close()
 
         feeder = threading.Thread(target=feed, daemon=True)
         feeder.start()
-        app_module.run_tui(
-            TuiState(model_name="test-model"),
-            owl_color=False,
-            input=pipe,
-            output=DummyOutput(),
-            initial_input_text="hello guard 2 test",
-        )
+        try:
+            app_module.run_tui(
+                TuiState(model_name="test-model"),
+                owl_color=False,
+                input=pipe,
+                output=DummyOutput(),
+                initial_input_text="hello guard 2 test",
+            )
+        except EOFError:
+            if feeder_errors:
+                pytest.fail("; ".join(feeder_errors))
+            raise
         feeder.join(timeout=3)
 
     assert feeder_errors == []

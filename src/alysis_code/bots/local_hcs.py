@@ -63,6 +63,17 @@ _ERROR_PIPE_BUSY = 231
 _ERROR_SERVICE_DOES_NOT_EXIST = 1060
 _ERROR_SERVICE_ALREADY_RUNNING = 1056
 
+# The one Windows prompt is the app's to show (windowsOwlsComputer.ts installService): its private
+# computer card offers it as Finish setup wherever it appears, the owl's own page included.
+SERVICE_MISSING = (
+    "This PC's private computer service is not set up yet: choose Finish setup on the private "
+    "computer card on the owl's page, then Yes in the Windows prompt."
+)
+SERVICE_OUTDATED = (
+    "This PC's private computer service needs an update: choose Finish setup on the private "
+    "computer card on the owl's page, then Yes in the Windows prompt."
+)
+
 
 # --- Windows boundary (ctypes). Small module-level functions so tests can replace them. -------
 
@@ -160,8 +171,7 @@ def _service_handle(access):
         if not service:
             if ctypes.get_last_error() == _ERROR_SERVICE_DOES_NOT_EXIST:
                 raise ComputeCreationRefused(
-                    "This PC's private computer service is not set up yet. Set it up in Settings > Owls.",
-                    code="windows_computer_service_missing",
+                    SERVICE_MISSING, code="windows_computer_service_missing"
                 )
             raise ComputeError("The private computer service could not be opened.")
         return advapi32, service
@@ -333,8 +343,7 @@ class _ServiceSession:
                 if not hello.get("ok") or hello["result"].get("protocol") != PROTOCOL:
                     self._drop()
                     raise ComputeCreationRefused(
-                        "This PC's private computer service needs an update. Set it up again in Settings > Owls.",
-                        code="windows_computer_service_outdated",
+                        SERVICE_OUTDATED, code="windows_computer_service_outdated"
                     )
             try:
                 reply = self._exchange(payload)

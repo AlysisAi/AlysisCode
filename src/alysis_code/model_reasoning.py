@@ -156,9 +156,14 @@ def _api_contract(
         if candidate and candidate.reasoning_contract is not None:
             return candidate.reasoning_contract
         return openrouter_reasoning_contract(None, model=model) or UNKNOWN_CONTRACT
-    contract = reasoning_contract_for(
-        provider_key, model, preset_key=preset.key if preset else None
-    )
+    return route_reasoning_contract(provider_key, model, protocol, preset.key if preset else None)
+
+
+def route_reasoning_contract(
+    provider_key: str | None, model: str, protocol: str, preset_key: str | None = None
+) -> ReasoningContract:
+    """The model's documented choices that this protocol can send."""
+    contract = reasoning_contract_for(provider_key, model, preset_key=preset_key)
     if protocol == "anthropic_messages":
         supported = {WIRE_THINKING_ADAPTIVE, WIRE_BUDGET_TOKENS}
     elif protocol == "gemini_generate_content":
@@ -292,7 +297,11 @@ def invocation_reasoning_settings(
     cfg: Any, value: str, *, transport: httpx.BaseTransport | None = None
 ) -> tuple[str | None, bool | None]:
     """Translate a validated UI choice to client settings, including config reloads."""
-    effort = invocation_reasoning_effort(cfg, value, transport=transport)
+    return reasoning_client_options(invocation_reasoning_effort(cfg, value, transport=transport))
+
+
+def reasoning_client_options(effort: str | None) -> tuple[str | None, bool | None]:
+    """Translate a supported picker value into provider client options."""
     enabled = None if effort is None else effort not in {"none", "disabled"}
     # Toggle-only choices are not provider effort levels.
     if effort == "enabled":

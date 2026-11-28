@@ -18,9 +18,10 @@ from pydantic import Field, field_validator, model_validator
 from . import desktop_elements
 from .artifact_validation import FORMATS, failed
 from .browser import BrowserImageResult
-from .compute import ComputeCreationRefused
+from .compute import ComputeCreationRefused, ComputeError
 from .computer import ComputerLocks, ComputerViews, computer_operation
 from .computer_context import opening_for
+from .computer_readiness import start_failed
 from .desktop_linux import (
     DesktopError,
     DesktopStartupCleanupError,
@@ -720,6 +721,11 @@ class DesktopComputers:
                 or not self.store.bot(self.owner, task["bot_id"])["files_enabled"]
             ):
                 raise DesktopError("File transfer is unavailable for this bot.")
+            from .assignment_computer import require_assignment_file
+
+            file_id = getattr(args, "file_id", None) or getattr(args, "previous_file_id", None)
+            if file_id:
+                require_assignment_file(self.store, self.owner, task, file_id)
             if name == "computer_import_file":
                 source = self.store.file(self.owner, task["bot_id"], args.file_id)
                 if source["size_bytes"] > MAX_FILE_BYTES:
@@ -763,6 +769,13 @@ class DesktopComputers:
                     computer = self._create(bot_id, task["id"], lambda: token.is_cancelled)
                 except ComputeCreationRefused as exc:
                     return exc.receipt()
+                except ComputeError as exc:
+                    # A computer that did not start leaves the task going without it, saying so.
+                    receipt = start_failed(exc)
+                    if receipt is None:
+                        raise
+                    self.views.release_claim(self.owner, bot_id, task["id"], "desktop")
+                    return receipt
                 # A desktop that declares at its start reads elements from its first observation.
                 elements = computer.reads_elements()
                 _admit(computer, name, args, image_input)

@@ -11150,9 +11150,18 @@ def _redact_bridge_error(
     error bodies that echo raw base64 without a ``data:image`` prefix.
     """
 
+    from ..failure_category import is_provider_billing_error
+    from ..llm.types import LLMError
+    from ..llm_error_display import friendly_llm_error_message
+
+    display = (
+        friendly_llm_error_message(value)
+        if isinstance(value, LLMError) and is_provider_billing_error(value)
+        else str(value)
+    )
     redacted = _redact_sensitive_media_projection(
         session,
-        str(value),
+        display,
         host_image_binding=host_image_binding,
         image_paths=image_paths,
     )

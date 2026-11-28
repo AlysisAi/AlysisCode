@@ -73,7 +73,8 @@ class ObjectRetention:
             # inventories need neither per-file inserts nor JSON decoding.
             references = db.execute(
                 "SELECT f.ref,b.id,b.owner FROM file_objects f JOIN files l ON l.id=f.file_id "
-                "JOIN bots b ON b.id=l.bot_id WHERE b.owner=? "
+                "JOIN bots b ON b.id=l.bot_id WHERE b.owner=? AND NOT EXISTS "
+                "(SELECT 1 FROM stored_objects s WHERE s.owner=b.owner AND s.ref=f.ref) "
                 "UNION SELECT w.ref,b.id,b.owner FROM workspace_objects w "
                 "JOIN bots b ON b.id=w.bot_id WHERE b.owner=? "
                 "UNION SELECT w.ref,b.id,b.owner FROM browser_states w "

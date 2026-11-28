@@ -8,6 +8,7 @@ that need real calculation run when ALYSIS_TEST_OFFICE_SOFFICE names an installe
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -29,6 +30,7 @@ from alysis_code.bots.models import BotInput, TaskInput
 from alysis_code.bots.owl_documents import DOCUMENT_TOOLS
 from alysis_code.bots.runtime import BotRuntime, tool_schema
 from alysis_code.bots.store import Conflict, LimitReached, Store
+from alysis_code.bots.task_events import read as read_task_events
 from alysis_code.cancellation import CooperativeCancellationError
 
 GREEK = "Γεια σου κόσμε"
@@ -309,15 +311,15 @@ def test_a_chart_the_engine_refuses_comes_back_in_its_words_and_the_guide_shows_
 # ---------------------------------------------------------------- a failed check
 
 
-def clipped_render(tmp_path, monkeypatch):
-    """A renderer whose second page has text outside the page, as a broken layout would."""
+def two_page_render(tmp_path, monkeypatch, *, clip_second=False):
+    """Render a two-page PDF, optionally putting its second page's text outside the page."""
     from alysis_code.office import rendering
 
     pdf_path = tmp_path / "rendered.pdf"
     canvas = Canvas(str(pdf_path))
     canvas.drawString(72, 720, "Σελίδα 1")
     canvas.showPage()
-    canvas.drawString(560, 400, "Κείμενο που βγαίνει έξω από τη σελίδα")
+    canvas.drawString(560 if clip_second else 72, 400, "Κείμενο που βγαίνει έξω από τη σελίδα")
     canvas.showPage()
     canvas.save()
 
@@ -333,7 +335,7 @@ def clipped_render(tmp_path, monkeypatch):
 @pytest.mark.parametrize("image_input", [True, False])
 def test_a_failed_check_saves_nothing_and_says_what_to_fix(tmp_path, monkeypatch, image_input):
     store, bot, task = owl(tmp_path)
-    clipped_render(tmp_path, monkeypatch)
+    two_page_render(tmp_path, monkeypatch, clip_second=True)
     runtime = BotRuntime(store, "owner", lambda _: None)
     result = call(
         runtime,
@@ -397,6 +399,20 @@ def test_formulas_are_calculated_and_a_formula_error_blocks_saving(tmp_path, rea
         io.BytesIO(store.file_data("owner", bot["id"], made["id"])), data_only=True
     )
     assert saved["Φύλλο"]["B4"].value == 200
+    scenario = {
+        "input": {"sheet": "Φύλλο", "cell": "B2", "value": 100},
+        "expect": [{"sheet": "Φύλλο", "cell": "B4", "before": 200, "after": 180}],
+    }
+    checked = call(
+        runtime, task, "check_document", {"file_id": made["id"], "input_check": scenario}
+    )
+    assert checked["passed"] and checked["input_check"]["state"] == "passed"
+    assert checked["input_check"]["source_sha256"] == made["sha256"]
+    assert checked["input_check"]["outputs"][0]["current"]["value"] == 180
+    assert (
+        hashlib.sha256(store.file_data("owner", bot["id"], made["id"])).hexdigest()
+        == made["sha256"]
+    )
     broken = call(
         runtime,
         task,
@@ -415,6 +431,180 @@ def test_formulas_are_calculated_and_a_formula_error_blocks_saving(tmp_path, rea
 
 
 # ---------------------------------------------------------------- editing a Library file
+
+
+def test_native_workbook_finding_and_exact_revision_reach_the_owl(tmp_path, no_renderer):
+    store, bot, task = owl(tmp_path)
+    runtime = BotRuntime(store, "owner", lambda _: None)
+    spec = {
+        "sheets": [
+            {
+                "name": "Équipe",
+                "rows": [
+                    [
+                        {
+                            "value": "Deux écarts restent ouverts",
+                            "format": {"font_size": 20, "bold": True},
+                        }
+                    ],
+                    ["ID", "État"],
+                    ["0007", "ouvert"],
+                    ["0013", "ouvert"],
+                    ["Nombre", {"formula": '=COUNTIF(B3:B4,"ouvert")'}],
+                ],
+                "merge_ranges": ["A1:C1"],
+                "row_heights": {"1": 60},
+                "column_widths": [14, 14, 14],
+                "page_setup": {"print_area": "A1:C5"},
+            }
+        ]
+    }
+    guide = call(runtime, task, "describe_document_format", {"format": "xlsx"})["spec"]
+    assert "merge_ranges" in guide["create"] and "font_size" in guide["format"]
+    first = call(
+        runtime, task, "create_document", {"format": "xlsx", "name": "Équipe.xlsx", "spec": spec}
+    )
+    second = call(
+        runtime,
+        task,
+        "edit_document",
+        {
+            "file_id": first["id"],
+            "spec": {
+                "expected_source_sha256": first["sha256"],
+                "changes": [
+                    {"sheet": "Équipe", "cell": "B3", "value": "clos"},
+                    {
+                        "sheet": "Équipe",
+                        "cell": "A1",
+                        "value": "Un écart reste ouvert",
+                        "format": {"font_size": 18},
+                    },
+                    {
+                        "sheet": "Équipe",
+                        "cell": "A6",
+                        "value": "0007 : ouvert → clos. Écarts ouverts : 2 → 1.",
+                    },
+                    {
+                        "sheet": "Équipe",
+                        "merge_ranges": ["A6:C6"],
+                        "row_heights": {"6": 36},
+                        "extend_print_area": "A1:C6",
+                    },
+                ],
+            },
+        },
+    )
+    assert second["saved"] and second["version"] == 2
+    evidence = second["revision_evidence"]
+    assert (evidence["source_sha256"], evidence["output_sha256"]) == (
+        first["sha256"],
+        second["sha256"],
+    )
+    assert evidence["cell_edits"]["changed"] == 3
+    assert evidence["cell_edits"]["examples"][0] == {
+        "sheet": "Équipe",
+        "cell": "B3",
+        "previous": {"type": "s", "value": "ouvert"},
+        "current": {"type": "s", "value": "clos"},
+    }
+    assert evidence["formula_displays"] == {"state": "unavailable"}
+    unavailable = call(
+        runtime,
+        task,
+        "check_document",
+        {
+            "file_id": second["id"],
+            "input_check": {
+                "input": {"sheet": "Équipe", "cell": "B4", "value": "clos"},
+                "expect": [{"sheet": "Équipe", "cell": "B5", "before": 1, "after": 0}],
+            },
+        },
+    )
+    assert not unavailable["passed"] and unavailable["input_check"]["state"] == "unavailable"
+    for receipt, font_size, status in [(first, 20, "ouvert"), (second, 18, "clos")]:
+        book = load_workbook(io.BytesIO(store.file_data("owner", bot["id"], receipt["id"])))
+        try:
+            sheet = book.active
+            assert "A1:C1" in sheet.merged_cells and sheet["A1"].font.sz == font_size
+            assert sheet.row_dimensions[1].height == 60
+            if receipt is second:
+                assert "A6:C6" in sheet.merged_cells and sheet.row_dimensions[6].height == 36
+                assert sheet.print_area.endswith("$A$1:$C$6")
+            else:
+                assert sheet["A6"].value is None and sheet.print_area.endswith("$A$1:$C$5")
+            assert (sheet["A3"].value, sheet["B3"].value, sheet["B5"].value) == (
+                "0007",
+                status,
+                '=COUNTIF(B3:B4,"ouvert")',
+            )
+        finally:
+            book.close()
+
+
+@pytest.mark.parametrize("tool", ["create_document", "edit_document"])
+def test_workbook_failure_reason_codes_survive_recovery_and_reopen(tmp_path, no_renderer, tool):
+    store, bot, task = owl(tmp_path)
+    filename = "Équipe.xlsx"
+    rows = [["Secteur", "Total"], ["Est", 2]]
+
+    def create(**sheet):
+        return {
+            "format": "xlsx",
+            "name": filename,
+            "spec": {"sheets": [{"name": "Données", **sheet}]},
+        }
+
+    if tool == "create_document":
+        attempts = [
+            create(rows=rows, merge_ranges=["A1:B1"]),
+            create(rows=[[{"value": "Titre", "format": {"font_size": 99}}]]),
+            create(rows=rows, merge_ranges=["A1:A2"]),  # A different layout error.
+            create(rows=rows),
+        ]
+    else:
+        original = call(
+            BotRuntime(store, "owner", lambda _: None), task, "create_document", create(rows=rows)
+        )
+
+        def edit(**change):
+            return {
+                "file_id": original["id"],
+                "spec": {
+                    "expected_source_sha256": original["sha256"],
+                    "changes": [{"sheet": "Données", **change}],
+                },
+            }
+
+        attempts = [
+            edit(merge_ranges=["A1:B1"]),
+            edit(cell="A1", format={"font_size": 99}),
+            edit(merge_ranges=["A1:A2"]),
+            edit(cell="B2", value=3),
+        ]
+    client = ClientFixture(
+        [
+            *(response(name=tool, arguments=args) for args in attempts),
+            response("Le fichier est prêt."),
+        ]
+    )
+    runtime = BotRuntime(store, "owner", lambda _: client)
+    runtime.run(task, runtime.task_token(task["id"]))
+    for connection in (store, Store(store.path)):
+        page = read_task_events(connection, "owner", task["id"], 0, 100)
+        assert page["status"] == "completed"
+        terminal = [e for e in page["events"] if e["kind"] in {"tool_failed", "tool_completed"}]
+        assert [e["kind"] for e in terminal] == ["tool_failed"] * 3 + ["tool_completed"]
+        assert [e["data"].get("reason_code") for e in terminal] == [
+            "spreadsheet_merge_occupied",
+            "spreadsheet_font_size_invalid",
+            None,
+            None,
+        ]
+        assert all(e["data"]["name"] == tool for e in terminal)
+        assert all(set(e["data"]) == {"name", "error", "reason_code"} for e in terminal[:2])
+    expected_revisions = [1, 2] if tool == "edit_document" else [1]
+    assert sorted(f["revision"] for f in library(store, bot)) == expected_revisions
 
 
 def test_editing_a_library_file_saves_its_next_version_and_keeps_the_original(
@@ -463,6 +653,56 @@ def test_editing_a_library_file_saves_its_next_version_and_keeps_the_original(
     )
     assert copy["saved"] is True and copy["version"] == 1 and copy["name"] == "Αντίγραφο.docx"
     assert scratch_left(store) == []
+
+
+@pytest.mark.parametrize(
+    "edited,requested,slide_count,clip_second,shown",
+    [
+        pytest.param([2], None, 2, False, 2, id="single-edited-slide"),
+        pytest.param([2], 1, 2, False, 1, id="explicit-page"),
+        pytest.param([2, 1], None, 2, False, 1, id="several-edited-slides"),
+        pytest.param([1], None, 2, True, 2, id="serious-render-warning"),
+        pytest.param([1], 1, 2, True, 1, id="explicit-page-with-warning"),
+        pytest.param([2], None, 3, False, 1, id="page-count-differs-from-deck"),
+    ],
+)
+def test_owl_shows_the_relevant_page_after_a_slide_edit(
+    tmp_path, no_renderer, monkeypatch, edited, requested, slide_count, clip_second, shown
+):
+    store, _, task = owl(tmp_path)
+    runtime = BotRuntime(store, "owner", lambda _: None)
+    made = call(
+        runtime,
+        task,
+        "create_document",
+        {
+            "format": "pptx",
+            "name": "Horaires.pptx",
+            "spec": {"slides": [{"title": f"Page {n}"} for n in range(1, slide_count + 1)]},
+        },
+    )
+    inspected = call(runtime, task, "inspect_document", {"file_id": made["id"]})
+    edits = []
+    for n in edited:
+        title = inspected["content"]["slides"][n - 1]["shapes"][0]
+        edits.append(
+            {
+                "slide": n,
+                "shape_id": title["shape_id"],
+                "expected_text_sha256": title["text_sha256"],
+                "text": f"Revised page {n}",
+            }
+        )
+    two_page_render(tmp_path, monkeypatch, clip_second=clip_second)
+    arguments = {
+        "file_id": made["id"],
+        "spec": {"expected_source_sha256": made["sha256"], "edits": edits},
+    }
+    if requested is not None:
+        arguments["page"] = requested
+    result = call(runtime, task, "edit_document", arguments, image_input=True)
+    assert result.observation["shown_page"] == shown
+    assert result.observation["saved"] is (not clip_second)
 
 
 def test_a_pdf_or_other_file_is_not_taken_for_an_editable_document(tmp_path, no_renderer):

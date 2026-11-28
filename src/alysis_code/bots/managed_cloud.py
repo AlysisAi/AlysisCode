@@ -29,6 +29,7 @@ class AccountAuthority:
         self.cipher = AESGCM(hashlib.sha256(b"alysis-cloud-account-v1\0" + key).digest())
         self.cache = {}
         self.pending = {}
+        self.hub_delegations = {}
         self.lock = threading.Lock()
 
     def access(self, credential, *, allow_upgrade=False):
@@ -101,26 +102,103 @@ class AccountAuthority:
         data = base64.b64decode(sealed, validate=True)
         return self.cipher.decrypt(data[:12], data[12:], owner.encode()).decode()
 
+    def credential(self, owner):
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT credential FROM cloud_accounts WHERE owner=?", (owner,)
+            ).fetchone()
+        return self._open(owner, row[0]) if row is not None else None
+
     def allowed(self, owner):
+        try:
+            key = self.credential(owner)
+            return key is not None and self.access(key) == owner
+        except Exception:
+            # An outage/revocation pauses new claims without replaying a task.
+            return False
+
+    def hub_client(self, owner, *, owl_id, timeout_s=20, manage=False):
+        from ..hub_apps import HubAppsClient, HubAppsError
+
         try:
             with self.store.connect() as db:
                 row = db.execute(
                     "SELECT credential FROM cloud_accounts WHERE owner=?", (owner,)
                 ).fetchone()
-            return row is not None and self.access(self._open(owner, row[0])) == owner
-        except Exception:
-            # An outage/revocation pauses new claims without replaying a task.
-            return False
+            if row is None:
+                raise HubAppsError("signed_out")
+            identity = (owner, owl_id, manage, hashlib.sha256(row[0].encode()).digest())
+            with self.lock:
+                entry = self.hub_delegations.get(identity)
+            if not entry or entry[0] <= self.clock():
+                registered = self.lookup(self._open(owner, row[0]), owl_id=owl_id, manage=manage)
+                if (
+                    registered.get("status") != "available"
+                    or "account:" + registered["account_id"] != owner
+                ):
+                    raise HubAppsError("signed_out")
+                entry = self.clock() + 240, registered["owl_app_access"]
+                with self.lock:
+                    if len(self.hub_delegations) >= 256:
+                        self.hub_delegations.clear()
+                    self.hub_delegations[identity] = entry
+            return HubAppsClient(entry[1], owl_id=owl_id, timeout_s=timeout_s)
+        except CloudAccessError as exc:
+            raise HubAppsError(
+                "signed_out" if exc.status == "sign_in_required" else "unavailable"
+            ) from None
 
     def owners(self):
         with self.store.connect() as db:
             return [row[0] for row in db.execute("SELECT owner FROM cloud_accounts ORDER BY owner")]
 
+    def publication_recipients(self, owner, emails, *, credential=None):
+        import httpx
+        from fastapi import HTTPException
+
+        from ..alysis_cloud import owl_share_recipients_url
+
+        if credential is None:
+            with self.store.connect() as db:
+                row = db.execute(
+                    "SELECT credential FROM cloud_accounts WHERE owner=?", (owner,)
+                ).fetchone()
+            if not row:
+                raise HTTPException(401, "Sign in to share a conversation.")
+            credential = self._open(owner, row[0])
+        try:
+            response = httpx.post(
+                owl_share_recipients_url(),
+                json={"emails": emails},
+                headers={"Authorization": "Bearer " + credential},
+                timeout=8,
+                follow_redirects=False,
+            )
+            if response.status_code == 422:
+                return []
+            if response.status_code == 429:
+                raise HTTPException(429, "Too many sharing requests. Try again later.")
+            response.raise_for_status()
+            result = response.json()
+            if (
+                "account:" + result["owner"] != owner
+                or not isinstance(result["accounts"], list)
+                or any(
+                    not isinstance(v, str) or not ACCOUNT_ID.fullmatch(v)
+                    for v in result["accounts"]
+                )
+            ):
+                raise ValueError("Invalid account response")
+            return result["accounts"]
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            raise HTTPException(503, "Account sharing is temporarily unavailable.") from None
+
 
 class AccountApplications:
-    def __init__(self, operator, authority, factory, *, max_accounts=8):
+    def __init__(self, operator, authority, factory, *, max_accounts=8, reader_origin=None):
         self.operator, self.authority, self.factory = operator, authority, factory
         self.max_accounts = max_accounts
+        self.reader_origin = reader_origin
         self.apps = {}
         self.lock = asyncio.Lock()
         self.resources = AsyncExitStack()
@@ -131,14 +209,29 @@ class AccountApplications:
             app.state.runtime.is_running for app in self.apps.values()
         )
 
-    async def account(self, owner):
+    async def account(self, owner, credential=None):
         if owner in self.apps:
             return self.apps[owner]
         async with self.lock:
             if owner not in self.apps:
                 if len(self.apps) >= self.max_accounts:
                     raise CloudAccessError()
-                app = await asyncio.to_thread(self.factory, owner)
+                if credential is None:
+                    credential = await asyncio.to_thread(self.authority.credential, owner)
+                app = await asyncio.to_thread(self.factory, owner, credential)
+                from functools import partial
+
+                from .publications import Publications, install_account_routes
+
+                install_account_routes(
+                    app,
+                    access=lambda: Publications(
+                        self.authority.store,
+                        owner,
+                        partial(self.authority.publication_recipients, owner),
+                        self.reader_origin,
+                    ),
+                )
                 await self.resources.enter_async_context(app.router.lifespan_context(app))
                 self.apps[owner] = app
             return self.apps[owner]
@@ -190,7 +283,7 @@ class AccountApplications:
                 )
                 if verified != owner:
                     raise CloudAccessError("sign_in_required")
-                app = self.apps.get(owner) if cleanup else await self.account(owner)
+                app = self.apps.get(owner) if cleanup else await self.account(owner, credential)
                 if app is None:
                     raise CloudAccessError("upgrade_required")
                 await asyncio.to_thread(self.authority.remember, owner, credential)
@@ -216,6 +309,12 @@ class AccountApplications:
 
     def application(self):
         app = FastAPI(lifespan=self.lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+        from .publications import install_reader, public_origin
+        from .sharing_service import sharing_gateway
+
+        if public_origin(self.reader_origin):
+            install_reader(app, self.authority.store)
+        app.mount("/sharing-api", sharing_gateway(self.authority, self.reader_origin))
         app.mount("/accounts/{account_id}", self)
         app.mount("/", self.operator)
         app.state.runtime = self

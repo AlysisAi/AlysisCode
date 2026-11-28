@@ -1,4 +1,4 @@
-# ChatGPT plan usage in Alysis
+# ChatGPT plan usage in Alysis Code
 
 Alysis is a local native agent. Its ChatGPT connection uses the documented Sign in with ChatGPT flow for locally hosted/open-source agents. API-key profiles remain a separate billing and authentication path.
 

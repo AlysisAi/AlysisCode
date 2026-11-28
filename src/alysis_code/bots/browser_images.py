@@ -29,6 +29,8 @@ SIGNATURES = {PREFIX: b"\x89PNG\r\n\x1a\n", JPEG_PREFIX: b"\xff\xd8\xff"}
 FILE_IMAGE_CAPTION = "Image from the Library file "
 SCREENSHOT_RETIRED = "[Earlier computer screenshot omitted; request a current frame before acting.]"
 FILE_IMAGE_RETIRED = "[Earlier image from a Library file omitted; read the file again to see it.]"
+CONNECTOR_IMAGE_CAPTION = "Image returned by connected app tool "
+CONNECTOR_IMAGE_RETIRED = "[Earlier connected app image omitted. Use its recorded observations or another read-only source. Do not repeat a change to recover it.]"
 FILE_IMAGE_SHOWN = (
     "The image is attached after the tool results, under a caption naming this file. Only one "
     "image stays in view at a time: a later image or screenshot replaces it."
@@ -46,6 +48,14 @@ class FileImageResult(BrowserImageResult):
     caption: str = ""
 
 
+@dataclass
+class ConnectorImageResult(BrowserImageResult):
+    """Normalized visual evidence for its task's answering model and independent reply check."""
+
+    owner: str = ""
+    task_id: str = ""
+
+
 def file_image(
     receipt: dict, image_url: str, source: str, width: int, height: int
 ) -> FileImageResult:
@@ -61,8 +71,14 @@ def file_image(
     )
 
 
-def unshown_receipt(result: FileImageResult) -> dict:
+def unshown_receipt(result: FileImageResult | ConnectorImageResult) -> dict:
     """The receipt of a Library image that a later image replaced before it was sent."""
+    if isinstance(result, ConnectorImageResult):
+        return {
+            **result.observation,
+            "visual_status": "superseded",
+            "visual_note": "A later image in this step took its place. Use a read-only source if the omitted image matters. Do not repeat a change to recover it.",
+        }
     return {**result.observation, "message": FILE_IMAGE_NOT_SHOWN}
 
 
@@ -136,13 +152,16 @@ def retire_browser_images(messages: list[dict]) -> None:
     for index, message in enumerate(messages):
         content = message.get("content")
         if isinstance(content, list):
-            from_file = any(
-                isinstance(part, dict)
-                and part.get("type") == "text"
-                and str(part.get("text", "")).startswith(FILE_IMAGE_CAPTION)
+            captions = [
+                str(part.get("text", ""))
                 for part in content
-            )
-            placeholder = FILE_IMAGE_RETIRED if from_file else SCREENSHOT_RETIRED
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            placeholder = SCREENSHOT_RETIRED
+            if any(caption.startswith(FILE_IMAGE_CAPTION) for caption in captions):
+                placeholder = FILE_IMAGE_RETIRED
+            elif any(caption.startswith(CONNECTOR_IMAGE_CAPTION) for caption in captions):
+                placeholder = CONNECTOR_IMAGE_RETIRED
             messages[index] = {
                 **message,
                 "content": [

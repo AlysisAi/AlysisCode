@@ -1,6 +1,6 @@
 # Shell Sandbox
 
-Alysis can run shell and verification commands inside a sandboxed environment. The sandbox is designed to reduce the blast radius of local command execution while keeping normal repository workflows usable.
+Alysis Code can run shell and verification commands inside a sandboxed environment. The sandbox is designed to reduce the blast radius of local command execution while keeping normal repository workflows usable.
 
 The shell sandbox applies to `shell_run`, `shell_background`, and durable service launches through `shell_service_start`. `shell_output`, `shell_wait`, `shell_list`, and `shell_kill` operate on already tracked background processes and do not launch new sandbox containers or host commands. Verification commands and the `verify_run` tool use the verification sandbox path, which reuses the same backend settings unless configured otherwise.
 
@@ -36,7 +36,7 @@ Useful commands:
 
 ## Backends
 
-Alysis has portable backends and a bundled native Windows beta backend:
+Alysis Code has portable backends and a bundled native Windows beta backend:
 
 - `bwrap`: Bubblewrap-based isolation, recommended on Linux when available.
 - `docker`: container isolation where a compatible Docker daemon is available.
@@ -241,7 +241,7 @@ outside the selected workspace directory, and does not depend on the Docker sand
 it with `shell_service_stop` using the returned service id.
 
 Arbitrary containerized development servers still use `shell_service_start`. For TCP readiness
-with the Docker backend, sandbox networking must be explicitly enabled. Alysis resolves a
+with the Docker backend, sandbox networking must be explicitly enabled. Alysis Code resolves a
 loopback interface from the operating system and publishes only the requested TCP port there; the
 server inside the container must listen on its container-wide interface at that port. Docker's
 `network=off` mode intentionally rejects this path instead of starting an unreachable service.

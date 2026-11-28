@@ -629,7 +629,9 @@ def test_propose_action_says_plainly_when_there_is_no_private_computer(tmp_path)
     with pytest.raises(Conflict) as refusal:
         runtime._tool(task, "propose_action", data, ["propose_action"])
     assert "Do not ask for approval" in str(refusal.value)
-    assert "Settings > Owls" in str(refusal.value)
+    # Where its setup stands comes from the task state; the person is never sent to Settings.
+    assert "task state" in str(refusal.value) and "never Settings" in str(refusal.value)
+    assert "Settings >" not in str(refusal.value)
     assert not runtime.proposals.list(bot["id"])
     runtime.desktop_computers = object()
     receipt = runtime._tool(task, "propose_action", data, ["propose_action"])

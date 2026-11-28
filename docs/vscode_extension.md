@@ -1,19 +1,19 @@
 # VS Code Extension Architecture and Integration
 
 This document describes the architecture, backend contracts, and release gates for the
-extension under `extensions/vscode-alysis`. It has an Alysis Cockpit webview for chat and run
+extension under `extensions/vscode-alysis`. It has an Alysis Code Cockpit webview for chat and run
 sessions, management actions, code review, and diagnostics.
 
 ## Direction
 
-The VS Code extension should be a native IDE client for Alysis, not a terminal wrapper around
+The VS Code extension should be a native IDE client for Alysis Code, not a terminal wrapper around
 `alysis chat`. The extension should keep editor concerns in VS Code and agent/runtime concerns
-inside the installed Alysis package.
+inside the installed Alysis Code package.
 
 The intended shape is:
 
 - a TypeScript VS Code extension as the IDE host
-- a local Alysis IDE bridge/protocol owned by the Python package
+- a local Alysis Code IDE bridge/protocol owned by the Python package
 - explicit version negotiation between extension and bridge
 - structured event streaming from the [IDE protocol event model](ide_protocol.md#event-format)
 - host-owned approvals, cancellation, and artifact/diff routing
@@ -55,7 +55,7 @@ Python method schema. Bugs like stale `profile.rename` params or mutually exclus
 
 The policy boundary is explicit: the extension must not become a terminal-output scraper. Terminal
 setup/config menus stay out of the IDE path until they have typed metadata or native VS Code UI.
-The Alysis application-level `server start` command stays CLI-only while its
+The Alysis Code application-level `server start` command stays CLI-only while its
 lifecycle/auth/port exposure concerns remain unresolved; this is distinct from the owner-scoped
 `mcp.server.*` lifecycle below.
 `hooks watch` needs a streaming/lifecycle
@@ -141,8 +141,8 @@ The extension in `extensions/vscode-alysis` currently owns the first chat/run ID
 - discoverability + first-run entry points: a status-bar item and view-title buttons that open the
   cockpit or create a new Cockpit session (bridge health stays reachable from the status-bar
   tooltip), a Sessions `viewsWelcome` (Open Cockpit / Set up / Locate CLI), and a "Get started with
-  Alysis" walkthrough. The
-  **Locate Alysis CLI** command auto-detects the CLI (PATH, the active virtualenv, the configured
+  Alysis Code" walkthrough. The
+  **Locate Alysis Code CLI** command auto-detects the CLI (PATH, the active virtualenv, the configured
   Python interpreter directory, and common install dirs), validates a chosen binary with `--version`
   + `ide-bridge health` without spawning an untrusted workspace-local binary, and saves
   `alysis.cliPath` (workspace or global) before reconnecting
@@ -161,7 +161,7 @@ The extension in `extensions/vscode-alysis` currently owns the first chat/run ID
   remain owned/cancelled by the parent job
 - secure chat webview with crypto-backed nonce, strict CSP, packaged local script/style assets, and
   text-only rendering of model/tool/workspace output
-- Alysis Cockpit webview as the primary workflow surface, redesigned in a black-&-white theme
+- Alysis Code Cockpit webview as the primary workflow surface, redesigned in a black-&-white theme
   (status encoded by glyph/shape/weight, not hue; supports dark and light). It is chat-first: the
   header keeps a single compact row of mode / model / trust chips that stays one horizontal row even at
   a docked side-panel width (it scrolls if it ever overflows, never wrapping into full-width bars), with
@@ -191,7 +191,7 @@ The extension in `extensions/vscode-alysis` currently owns the first chat/run ID
   region that flexes and the composer stays pinned as the shell's last row), every scroll region
   reserves a stable scrollbar gutter, and long text/labels keep horizontal padding so nothing clips
   under the scrollbar.
-- Alysis chat webview slash commands routed by an extension-side `SlashCommandRouter` rather
+- Alysis Code chat webview slash commands routed by an extension-side `SlashCommandRouter` rather
   than the terminal CLI parser or raw `chat.send` text. The supported v1 command set is `/help`,
   `/permissions readonly`, `/permissions review`, `/permissions auto`,
   `/cancel`, `/doctor`, `/config`, `/config set <key=value>`, `/update [cached|online]`,
@@ -247,7 +247,7 @@ The extension in `extensions/vscode-alysis` currently owns the first chat/run ID
   guarded non-secret `config.set`, `profile.*`, retained `session.show`/`session.score`,
   `tools.catalog`, `tool.*`, `skill.*`, doctor summary/providers/bundle, sandbox doctor/setup/pull,
   cached-by-default `update.check`, `report.create`, MCP status/prompts/auth status/logout, hooks
-  inspection/trust/toggle/init, conventions list/render, and Alysis extension package
+  inspection/trust/toggle/init, conventions list/render, and Alysis Code extension package
   search/list/info/install/remove/toggle.
   Mutating methods carry `workspace_trusted` params, are advertised with `mutates` and
   `trust_required` capability flags, require Workspace Trust on the extension side, and still fail
@@ -300,7 +300,7 @@ The extension in `extensions/vscode-alysis` currently owns the first chat/run ID
   result and errors render in the cockpit, redacted. Session compact/clear/resume require Workspace
   Trust in addition to their confirm modal; the empty Sessions state keeps the getting-started
   welcome.
-  A first-class **Manage** tree under the Alysis activity-bar container browses Tools, Skills,
+  A first-class **Manage** tree under the Alysis Code activity-bar container browses Tools, Skills,
   MCP servers, Hooks, Conventions, and Extensions. Each domain group is gated on its capability
   (`tools`/`skills`/`mcp`/`hooks`/`conventions`/`ext`) — an unsupported domain renders the structured
   compatibility reason from bridge health, such as a newer-CLI version gate, security-model block,
@@ -500,7 +500,7 @@ runtime chips, Diagnostics panel, and Timeline. The header renders only the high
 CLI Health, Bridge, and Sandbox summary; Diagnostics retains CLI Origin, protocol, provider,
 Workspace Trust, and detailed sandbox/provider messages. `/doctor` records the safe command label
 `alysis sandbox doctor --smoke`, exit code, and redacted stdout/stderr previews, with the full
-output available from the Alysis Output panel instead of being dumped into the visible Timeline.
+output available from the Alysis Code Output panel instead of being dumped into the visible Timeline.
 
 The extension/CLI compatibility contract is feature-scoped:
 
@@ -541,7 +541,7 @@ Diagnostics (with a single low-noise Timeline pointer) rather than stacking one 
 
 Recovery distinguishes *unreachable* from *outdated*. A CLI that cannot be found or launched (not on
 `PATH`, a wrong `alysis.cliPath`, or a failed bridge transport) shows one **"Can't reach the
-Alysis CLI"** card whose primary action is **Locate Alysis CLI** — locating the right binary,
+Alysis Code CLI"** card whose primary action is **Locate Alysis Code CLI** — locating the right binary,
 not upgrading, is the fix. A CLI that responds but is too old (wrong protocol or missing the
 ide-bridge surface) shows one **outdated** card whose primary action is **Upgrade**. A single
 detection failure renders exactly one card: the bridge-process error it implies is folded into that
@@ -558,7 +558,7 @@ applies live without a window reload.
 Native VS Code `@alysis` Chat Participant support is enabled as an optional thin router on top
 of the Cockpit. The extension uses the stable VS Code 1.90 `vscode.chat.createChatParticipant` API
 and contributes `/help` and `/doctor` commands without proposed APIs or a
-GitHub Copilot dependency. The Cockpit remains the primary Alysis UI: native chat opens the
+GitHub Copilot dependency. The Cockpit remains the primary Alysis Code UI: native chat opens the
 Cockpit, routes supported commands through the same `SlashCommandRouter` and controllers, fails
 unknown native slash commands closed, and does not duplicate Cockpit state inside the native chat
 view. Normal `@alysis` text opens the Cockpit rather than silently sending prompt text to a
@@ -566,7 +566,7 @@ model. The participant obeys Workspace Trust, executable-origin checks, CLI comp
 SecretStorage forwarding guards, and approval boundaries.
 
 
-## Alysis Responsibilities
+## Alysis Code Responsibilities
 
 The Python package should own:
 
@@ -585,8 +585,8 @@ Production-ready VS Code support requires:
 
 - protocol compatibility tests between extension and bridge
 - mock-bridge extension tests for UI state, approvals, cancellation, and reconnect behavior
-- integration smoke tests against a real local Alysis bridge
-- clear behavior when the installed Alysis version is missing, too old, or incompatible
+- integration smoke tests against a real local Alysis Code bridge
+- clear behavior when the installed Alysis Code version is missing, too old, or incompatible
 - documented storage boundaries for SecretStorage, workspace files, session logs, and artifacts
 - no claims in README or release notes that the scaffold is a published or feature-complete extension
 
@@ -728,7 +728,7 @@ Known beta limitations:
 
 - IDE auto/fullaccess execution is unsupported.
 - Active runtime cancellation uses cooperative checkpoints; hard interrupt is unavailable.
-- The extension requires a local Alysis CLI with IDE Protocol v1.
+- The extension requires a local Alysis Code CLI with IDE Protocol v1.
 - VS Code Web is unsupported because the extension launches a local CLI process.
 - Agent-controlled Managed Browser is public-web-only, and nested-subagent browser tools remain
   unavailable. Direct IDE local testing is explicitly confirmed and loopback-only; LAN and

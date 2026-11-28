@@ -118,6 +118,19 @@ class _BoundedWriter:
         return self.stream.write(data)
 
 
+class _DigestReader:
+    """Hash exactly the regular-file bytes consumed by the tar writer."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def read(self, size):
+        data = self.stream.read(size)
+        self.digest.update(data)
+        return data
+
+
 def pack_workspace(workspace: Path, target: Path) -> dict:
     """Return archive bytes, SHA-256 and regular-file count; never overwrite."""
     target = Path(target).absolute()
@@ -139,7 +152,7 @@ def pack_workspace(workspace: Path, target: Path) -> dict:
             )
             try:
                 with os.fdopen(fd, "w+b") as output:
-                    manifest, files = {}, 0
+                    manifest, payload_digests = {}, {}
                     with (
                         closing(_walk(root)) as entries,
                         tarfile.open(
@@ -164,15 +177,29 @@ def pack_workspace(workspace: Path, target: Path) -> dict:
                                         "Workspace file exceeds archive allowance."
                                     )
                                 with os.fdopen(os.dup(entry_fd), "rb") as payload:
-                                    tar.addfile(member, payload)
-                                files += 1
+                                    reader = _DigestReader(payload)
+                                    tar.addfile(member, reader)
+                                    payload_digests[name] = reader.digest.digest()
                     observed = {}
                     with closing(_walk(root)) as entries:
-                        for name, _, info in entries:
+                        for name, entry_fd, info in entries:
                             if name not in manifest or _stamp(info) != manifest[name]:
                                 raise WorkspaceArchiveError(
                                     "Workspace changed before snapshot publication."
                                 )
+                            if name in payload_digests:
+                                # Same-size rewrites can share the original timestamp.
+                                # Compare the bounded payload with the bytes actually archived.
+                                with os.fdopen(os.dup(entry_fd), "rb") as payload:
+                                    digest = hashlib.sha256()
+                                    for offset in range(0, info.st_size, CHUNK_BYTES):
+                                        digest.update(
+                                            payload.read(min(CHUNK_BYTES, info.st_size - offset))
+                                        )
+                                if digest.digest() != payload_digests[name]:
+                                    raise WorkspaceArchiveError(
+                                        "Workspace file changed before snapshot publication."
+                                    )
                             observed[name] = _stamp(info)
                     if observed != manifest or _stamp(os.fstat(root)) != root_stamp:
                         raise WorkspaceArchiveError(
@@ -192,7 +219,11 @@ def pack_workspace(workspace: Path, target: Path) -> dict:
                         dst_dir_fd=parent,
                         follow_symlinks=False,
                     )
-                    return {"bytes": size, "sha256": digest.hexdigest(), "files": files}
+                    return {
+                        "bytes": size,
+                        "sha256": digest.hexdigest(),
+                        "files": len(payload_digests),
+                    }
             finally:
                 os.unlink(stage, dir_fd=parent)
     except WorkspaceArchiveError:

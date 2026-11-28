@@ -1,12 +1,12 @@
 # Reference
 
-This page is a compact reference for the main Alysis CLI surface,
+This page is a compact reference for the main Alysis Code CLI surface,
 configuration model, runtime modes, and extension points. For deeper subsystem
 details, follow the linked guides.
 
-## What Alysis Does
+## What Alysis Code Does
 
-Alysis runs local coding sessions from a terminal. A session binds to a
+Alysis Code runs local coding sessions from a terminal. A session binds to a
 workspace, sends user turns to the configured model provider, exposes a
 controlled set of tools, and stores local logs and artifacts for review.
 
@@ -116,7 +116,7 @@ benchmark alias such as `benchmark`, `raw-agent`, or `raw-benchmark`.
 `alysis chat` and `alysis run` bind a workspace before the session starts.
 The requested path is the current directory or `--path`.
 
-- Inside a Git repository, Alysis binds to the repository root and keeps the
+- Inside a Git repository, Alysis Code binds to the repository root and keeps the
   starting directory as the focus directory.
 - Plain directories bind to the requested directory.
 - Missing paths require `--create-path`.
@@ -202,7 +202,7 @@ or Esc to return to your draft without interrupting the agent. `Alt+p` edits pas
 text in the composer. The diff viewer is read-only and does not submit a model turn.
 
 While an agent turn is running, press Enter to send the current text as a
-mid-turn message. Already-issued tool calls finish normally; Alysis then
+mid-turn message. Already-issued tool calls finish normally; Alysis Code then
 delivers the message at the next safe step boundary before the model chooses
 more tools, and keeps it in conversation history. Press Ctrl+Q instead to queue
 the text as a separate follow-up turn. With an empty input, Shift+Left recalls
@@ -280,7 +280,7 @@ Dragging across transcript text selects it inside the TUI and leaves the
 clipboard unchanged. While text is selected, the status line displays
 `ctrl+c to copy`; pressing Ctrl+C copies the selection and clears the highlight.
 Without a selection, Ctrl+C keeps its normal interrupt/exit behavior. Copied text
-omits Alysis's visual message and reasoning markers. When stdin is redirected
+omits Alysis Code's visual message and reasoning markers. When stdin is redirected
 on WSL or another POSIX host, the TUI reads interaction from the controlling
 terminal so wheel events are not lost in the pipe.
 
@@ -306,7 +306,7 @@ run is selected.
 
 ## Configuration
 
-Configuration is stored in the platform-specific Alysis config directory.
+Configuration is stored in the platform-specific Alysis Code config directory.
 Use `alysis config menu` or `/config` in chat for interactive edits.
 
 For an AI-subscription profile, open **Default Model** to choose an
@@ -534,7 +534,7 @@ document retrieval.
 `web_search` is a host-owned discovery tool exposed to the active model. The
 model decides whether a request needs current or source-backed web evidence and
 calls the tool through its normal tool-calling path. Search results remain
-untrusted external data. Alysis does not classify phrases or execute a search
+untrusted external data. Alysis Code does not classify phrases or execute a search
 before the model call.
 
 `web_search_policy=auto` exposes the tool. `off` hides it. The former `always`
@@ -627,7 +627,7 @@ snippets, and invalid diagnostic entries.
 Trusted source and evidentiary capability are separate. `NON_ASSERTIVE`
 commands are invalid as verifiers, `UNKNOWN` commands can be diagnostic but
 cannot satisfy a contract by default, and `ASSERTIVE` commands still need fresh
-host-observed execution. Alysis rejects vacuous, non-assertive, and
+host-observed execution. Alysis Code rejects vacuous, non-assertive, and
 failure-masking verification commands such as `true`, `echo ok`,
 `python -c 'pass'`, and `pytest -q || true` before they can satisfy
 authoritative completion. Legitimate checks such as `pytest -q`, `npm run
@@ -660,7 +660,7 @@ has a `status` of `passed`, `failed`, `inconclusive`, `not_executed`, or
 `stale`; legacy `ok` and `all_passed` are derived from that stronger status.
 Exit code zero plus unknown real execution is inconclusive, not passed.
 
-For execute-intent turns, Alysis also creates an acceptance contract from
+For execute-intent turns, Alysis Code also creates an acceptance contract from
 trusted inputs: the user instruction, task brief, planning constraints,
 pre-turn workspace scan, pre-existing checks, and host verification commands.
 The contract records required artifacts, exact command or I/O checks,
@@ -681,12 +681,12 @@ supplemental unless independent evidence covers the required criterion.
 Pre-existing checker entrypoints inside the workspace are fingerprinted by
 resolved path, regular-file state, size, and SHA-256 hash before the turn. If a
 checker is created, modified, replaced, deleted, or symlink-retargeted by the
-agent, Alysis emits a mutable-authoritative-checker downgrade and treats the
+agent, Alysis Code emits a mutable-authoritative-checker downgrade and treats the
 evidence as supplemental instead of host-authoritative.
 
 ## Extensions
 
-Alysis supports several extension points:
+Alysis Code supports several extension points:
 
 - [MCP](mcp.md): connect external Model Context Protocol servers.
 - [Skills](skills.md): use reusable instruction bundles rooted at `SKILL.md`.
@@ -766,11 +766,11 @@ delivering data can run longer. The separate meaningful-progress watchdog on
 Responses and OpenAI-compatible streams does not extend this socket timeout.
 During normal work, operation
 launches are checked against hard remaining time and the reserved finalization
-window. During finalization, Alysis blocks new routing, compaction,
+window. During finalization, Alysis Code blocks new routing, compaction,
 subagents, background work, broad exploration, provider retry sleeps, and
 speculative detours; it keeps bounded finishing actions such as edits,
 foreground shell commands, and high-value verification available when enough
-hard time remains. When the deadline is exhausted, Alysis reports
+hard time remains. When the deadline is exhausted, Alysis Code reports
 `deadline_exhausted` rather than step-budget exhaustion and uses a local
 fallback summary if there is not enough time for a final model call. Deadline
 telemetry records whether the source was explicit CLI, environment, config,
@@ -806,7 +806,7 @@ Thresholds are configurable with `run_deadline_convergence_fraction` and
 disables the stages while keeping the budget.
 
 Managed hosts can make the deadline contract fail closed with
-`--require-deadline`. When that option is present, Alysis resolves the
+`--require-deadline`. When that option is present, Alysis Code resolves the
 deadline from `--deadline-seconds`, `ALYSIS_RUN_DEADLINE_SECONDS`, or
 `run_deadline_seconds` using the normal precedence, then exits with a
 configuration error before session creation if no finite deadline exists.
@@ -824,7 +824,7 @@ The deadline supplied by a benchmark adapter must come from the final effective
 agent timeout after any host multiplier has already been applied. Do not use
 verifier or environment-build timeouts, and do not multiply the timeout again.
 The adapter should subtract a host-owned shutdown reserve for process cleanup and
-artifact flushing; Alysis still keeps its own internal finalization reserve
+artifact flushing; Alysis Code still keeps its own internal finalization reserve
 inside the remaining invocation budget.
 
 For the Terminal-Bench adapter, the authoritative timeout source is the
@@ -844,16 +844,16 @@ The host shutdown reserve is configured by
 `managed_host_shutdown_reserve_sec`, then
 `ALYSIS_MANAGED_HOST_SHUTDOWN_RESERVE_SEC`, then default `30`. It covers
 host process collection, terminal teardown, result serialization, and artifact
-flushing; it is not the same as Alysis's internal finalization reserve, the
+flushing; it is not the same as Alysis Code's internal finalization reserve, the
 per-provider LLM timeout, the verifier timeout, or an optional explicit step
-limit. Invalid or missing managed-host budgets fail closed before the Alysis
+limit. Invalid or missing managed-host budgets fail closed before the Alysis Code
 command is launched. When an agent logging directory is present, Terminal-Bench runs write
 `agent-logs/managed-host-deadline.json` with sanitized metadata only.
 
 The Terminal-Bench adapter has no fake verifier default. If no explicit
 `verify_cmd` or `verify_cmds` agent kwarg is supplied, the host verifier state is
 unavailable; setup clears managed-profile explicit verifier commands and
-Alysis uses normal repo-native verification discovery. When commands are
+Alysis Code uses normal repo-native verification discovery. When commands are
 supplied, the adapter rejects simultaneous `verify_cmd`/`verify_cmds`, empty
 members, and unordered sequences, emits one `--verify-cmd` flag per command in
 order, and records only verifier status/source/count plus stable command hashes
@@ -903,7 +903,7 @@ calls or duplicate visible text. Telemetry records stream restart count and
 reason without recording raw model content.
 
 For one-shot execute-intent turns, the prompt contract matches that runtime
-behavior: Alysis must not emit a standalone text-only plan and wait for the
+behavior: Alysis Code must not emit a standalone text-only plan and wait for the
 user. A short visible plan is allowed only as part of the same response that
 also starts implementation-oriented tool work. After read-only exploration, the
 next response should normally implement or create the requested deliverable, run
@@ -917,7 +917,7 @@ repair. The runtime records recovery telemetry, appends a concise action
 directive naming the missing next action, and retries. During the finalization
 window, at most one compact anomaly recovery call is allowed. When the provider
 explicitly supports forced tool choice and an appropriate schema is available,
-Alysis may request a safe tool such as `fs_write` for an explicit output or
+Alysis Code may request a safe tool such as `fs_write` for an explicit output or
 `verify_run` for missing verification; otherwise it falls back to ordinary
 prompting. Repeated empty responses stop with a local truthful summary rather
 than another forced-summary model call. For execute-intent one-shot and
@@ -947,7 +947,7 @@ Release maintainers should keep the focused regression matrix in the
 
 ## Sessions And Logs
 
-Alysis stores session logs locally as JSONL. Session commands include:
+Alysis Code stores session logs locally as JSONL. Session commands include:
 
 ```bash
 alysis sessions list
@@ -970,7 +970,7 @@ alysis report create --path .
 alysis report create "expected X, got Y" --path . --latest
 ```
 
-Alysis prepares local artifacts for review. It does not submit GitHub issues
+Alysis Code prepares local artifacts for review. It does not submit GitHub issues
 or upload archives automatically.
 
 Bundles sanitize structured credential fields, including JSON encoded inside tool
@@ -989,7 +989,7 @@ authorization headers, or environment dumps.
 
 ## Updates
 
-Alysis checks for newer releases in a non-blocking, cache-backed way when
+Alysis Code checks for newer releases in a non-blocking, cache-backed way when
 enabled. It never installs updates silently.
 
 When a cached check knows about a newer release, interactive launches
@@ -1023,7 +1023,7 @@ running it.
   resolves a different home directory or cannot reach the OS keyring holding the
   credential vault's master key.
 - If a provider response ends with a truncated stream, incomplete chunked read,
-  or peer-closed transport error, Alysis retries only when the error is
+  or peer-closed transport error, Alysis Code retries only when the error is
   transient and the current deadline budget permits the retry.
 - If the model asks for an unavailable tool, inspect the structured correction
   payload. It lists available names and safe suggestions without exposing tool

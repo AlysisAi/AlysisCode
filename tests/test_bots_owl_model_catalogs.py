@@ -27,6 +27,8 @@ from alysis_code.bots.owl_models import (
     CatalogModel,
     ModelConnection,
     PlaceModels,
+    image_input,
+    model_protocol,
 )
 from alysis_code.bots.owl_move import (
     MoveBegin,
@@ -190,8 +192,7 @@ def test_the_accounts_catalog_is_offered_under_its_connection_with_each_models_c
         assert item["reasoning"] is (declared.supports_reasoning is True)
     assert listed[0]["context_window"] != listed[1]["context_window"]
     assert listed[0]["image_input"] is declared_image_support(OWN, GATEWAY) is True
-    # Its route there is not the image-qualified one, so it is offered as text only.
-    assert listed[1]["image_input"] is False
+    assert listed[1]["image_input"] is declared_image_support(STRONG, GATEWAY) is True
     # Credentials and endpoints are never listed; the catalog was read once.
     assert KEY not in str(listed) and GATEWAY not in str(listed)
     offered.list()
@@ -210,6 +211,18 @@ def test_a_new_pick_must_be_open_to_the_person_and_todays_ids_stay(tmp_path):
     assert not offered.offers("alysis/not-in-the-catalog")
     assert not offered.offers("elsewhere/" + STRONG)
     assert not offered.offers(STRONG)
+
+
+@pytest.mark.parametrize(
+    ("model", "protocol"),
+    [("claude-haiku-5-5", "anthropic_messages"), ("gpt-6-luna", "openai_responses")],
+)
+def test_native_image_adapters_require_declared_vision(tmp_path, monkeypatch, model, protocol):
+    settings = replace(gateway_settings(tmp_path), model=model)
+    assert model_protocol(settings) == protocol
+    assert image_input(settings)
+    monkeypatch.setattr("alysis_code.bots.owl_models.declared_image_support", lambda *_: False)
+    assert not image_input(settings)
 
 
 def test_a_catalog_that_cant_be_read_offers_nothing_new_and_reads_again_later(tmp_path):
@@ -277,6 +290,40 @@ def test_owls_on_this_computer_offer_each_saved_connections_catalog(tmp_path, mo
     # Connections are read again each time; the account's catalog at most once a minute.
     assert offered.list() == listed
     assert account.reads == [KEY]
+
+
+def test_a_new_default_model_for_the_services_connection_counts_from_the_next_turn(
+    tmp_path, monkeypatch
+):
+    """The person chose another default model in the app while owls run: owls without a model
+    of their own think with it from their next turn, under the same connection id."""
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALYSIS_OTHER_TEST_KEY", "placeholder")
+
+    def save(default_model):
+        cfg = AppConfig(model=OWN, base_url=ENDPOINT)
+        cfg.extra_fields["profiles"] = {
+            "zai": {
+                "protocol": "openai_compat",
+                "base_url": ENDPOINT,
+                "api_key_env": "ALYSIS_OTHER_TEST_KEY",
+                "default_model": default_model,
+            },
+        }
+        cfg.extra_fields["active_profile"] = "zai"
+        save_config(cfg)
+
+    save(OWN)
+    settings = settings_from_bootstrap(
+        {"directory": str(tmp_path / "data"), "token": "t" * 40, "profile": "zai"}
+    )
+    offered = PlaceModels(saved_connections(settings), lambda *_: None)
+    assert (offered.default().id, offered.default().settings.model) == ("zai", OWN)
+    save("glm-5.4")
+    assert (offered.default().id, offered.default().settings.model) == ("zai", "glm-5.4")
+    assert [row["model"] for row in offered.list() if row["default"]] == ["glm-5.4"]
+    # The service's own settings stay as it started.
+    assert settings.model == OWN
 
 
 # Every turn thinks with the picked model, through its connection
@@ -387,7 +434,11 @@ def move_to(source, source_models, target, target_models, owl, *, carry=True):
     pages, cursor = [], None
     while True:
         page = export_page(
-            source, OWNER, owl, MoveExport(cursor=cursor, model=carry), models=source_models
+            source,
+            OWNER,
+            owl,
+            MoveExport(cursor=cursor, model=carry, reasoning_effort=carry),
+            models=source_models,
         )
         pages.append(page)
         cursor = page["cursor"]
@@ -410,6 +461,7 @@ def test_a_moved_owl_keeps_its_model_where_offered_and_otherwise_the_places_own(
     here = PlaceModels(lambda: [account_connection(settings, Account(catalog_rows()))], None)
     source = Store(tmp_path / "here.sqlite3")
     owl = owl_with_model(source, "alysis/" + STRONG)
+    source.save_bot(OWNER, BotInput(name="Apollo", reasoning_effort="high"), owl)
 
     # A place that offers the same connection and catalog keeps the same id.
     same = Store(tmp_path / "same.sqlite3")
@@ -417,6 +469,7 @@ def test_a_moved_owl_keeps_its_model_where_offered_and_otherwise_the_places_own(
     moved, record = move_to(source, here, same, there, owl)
     assert (record["model"], record["model_name"]) == ("alysis/" + STRONG, STRONG)
     assert moved["model"] == "alysis/" + STRONG
+    assert record["reasoning_effort"] == moved["reasoning_effort"] == "high"
 
     # A place whose ids are its models' own names keeps the same model by its id there.
     cloud = replace(settings, models=(STRONG,))
@@ -432,6 +485,7 @@ def test_a_moved_owl_keeps_its_model_where_offered_and_otherwise_the_places_own(
         )
         moved, _ = move_to(source, here, closed, elsewhere, owl)
         assert moved["model"] is None
+        assert moved["reasoning_effort"] is None
 
 
 def test_an_app_that_doesnt_ask_carries_no_model(tmp_path):
@@ -459,7 +513,7 @@ def test_changing_the_model_while_it_moves_is_a_change(tmp_path):
 
 
 def test_the_account_catalog_is_the_plans_models_open_where_the_gateway_serves_them(monkeypatch):
-    from alysis_code import account_login
+    from alysis_code import account_images, account_login
     from alysis_code.account_login import TrialStatus
 
     paid = {
@@ -468,8 +522,11 @@ def test_the_account_catalog_is_the_plans_models_open_where_the_gateway_serves_t
             {"model": OWN, "label": "GLM 5.3 Flash"},
             {"model": STRONG, "label": "GPT-6.1 Sol"},
             {"model": LATER, "label": "Claude Sonnet 5.5", "available": False},
+            # The plan also lists the model its pictures are made with: nobody thinks with it.
+            {"model": "picture-model", "label": "Pictures"},
         ],
     }
+    monkeypatch.setattr(account_images, "picture_models", lambda key: frozenset({"picture-model"}))
     status = TrialStatus(None, None, None, None, None, None, billing={"paid": paid})
     served = [OWN]
     keys = []

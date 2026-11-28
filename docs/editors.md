@@ -1,4 +1,4 @@
-# Alysis in editors
+# Alysis Code in editors
 
 One Python engine owns execution, permissions, tools and sessions. Each editor integration owns
 project trust, choosing the executable, editor operations and the transport to the sidebar.

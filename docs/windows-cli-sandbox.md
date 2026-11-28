@@ -680,6 +680,14 @@ A command follows the mode when all of this is true:
 Approved folders, read or write, do not change this: they are part of the
 boundary the person or the reviewer already accepted.
 
+With command internet access enabled, “Approve for me” can send ordinary
+foreground commands and verification steps to the reviewer. For example, the
+reviewer can approve listing a folder if it exists, reading a file, running a
+project test, fetching a public HTTPS page or removing a generated folder. It
+sees the command, its working directory and the access it would have. A denied
+command does not run.
+Credential grants and recognized remote writes still require a person.
+
 Following the mode means the mode's own checks now apply to a Windows
 command, where the mandatory card used to come first: a command that only
 looks runs without a card in "Ask for approval", a sensitive command

@@ -6,7 +6,7 @@ import json
 import time
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .models import Input, TaskInput
 from .store import Conflict, NotFound, Store, encode, uid
@@ -14,8 +14,17 @@ from .store import Conflict, NotFound, Store, encode, uid
 
 class TriggerInput(Input):
     name: str = Field(min_length=1, max_length=100)
-    kind: Literal["file_added"] = "file_added"
+    kind: Literal["file_added", "gmail_received", "calendar_changed"] = "file_added"
+    sender: str | None = Field(
+        default=None, max_length=254, pattern=r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$"
+    )
     instructions: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_sender(self):
+        if self.sender and self.kind != "gmail_received":
+            raise ValueError("A sender is only available for a Gmail event.")
+        return self
 
 
 class TriggerEdit(TriggerInput):
@@ -32,6 +41,7 @@ class TriggerControl(Input):
 class TriggerDecision(Input):
     state: Literal["active", "paused"]
     expected_revision: int = Field(ge=1)
+    connection_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def file_added(db, bot_id: str, file_id: str, name: str, now: float) -> None:
@@ -88,6 +98,7 @@ def revoke(db, trigger_id: str, reason: str) -> None:
 class TriggerStore:
     def __init__(self, store: Store, owner: str):
         self.store, self.owner = store, owner
+        self.apps = None
 
     def _get(self, db, bot_id: str, trigger_id: str) -> dict:
         self.store._bot(db, self.owner, bot_id)
@@ -96,7 +107,19 @@ class TriggerStore:
         ).fetchone()
         if row is None:
             raise NotFound("Automatic activation not found.")
-        return dict(row)
+        rule = dict(row)
+        if rule["kind"] != "file_added":
+            from .app_events import SOURCES
+
+            watch = db.execute(
+                "SELECT sender,connection_id,label,notice FROM app_event_watches WHERE trigger_id=?",
+                (trigger_id,),
+            ).fetchone()
+            source = SOURCES[rule["kind"]]
+            rule["app_event"] = (
+                {**watch, "catalog_id": source.catalog, "app_name": source.label} if watch else None
+            )
+        return rule
 
     def list(self, bot_id: str) -> list[dict]:
         with self.store.connect() as db:
@@ -105,7 +128,9 @@ class TriggerStore:
             for row in db.execute(
                 "SELECT * FROM bot_triggers WHERE bot_id=? ORDER BY created_at,id", (bot_id,)
             ):
-                rule = dict(row)
+                rule = (
+                    self._get(db, bot_id, row["id"]) if row["kind"] != "file_added" else dict(row)
+                )
                 rule["recent_deliveries"] = [
                     dict(r)
                     for r in db.execute(
@@ -135,9 +160,20 @@ class TriggerStore:
         source_task_id: str | None = None,
         requested: bool = False,
     ) -> dict:
+        binding = None
+        if data.kind != "file_added":
+            from .app_events import selected_account
+
+            self.store.bot(self.owner, bot_id)
+            account = selected_account(self.apps, bot_id, data.kind)
+            binding = (
+                account["id"],
+                account.get("label") or account["id"],
+                account["grant_revision"],
+            )
         with self.store.connect(write=True) as db:
             bot = self.store._bot(db, self.owner, bot_id)
-            if not bot["files_enabled"]:
+            if data.kind == "file_added" and not bot["files_enabled"]:
                 raise Conflict("Enable files for this bot before adding a file activation.")
             if requested:
                 self.store.direct_request(db, self.owner, bot_id, source_task_id)
@@ -149,12 +185,23 @@ class TriggerStore:
                     "SELECT * FROM bot_triggers WHERE source_task_id=?", (source_task_id,)
                 ).fetchone()
                 if old:
-                    if any(old[k] != v for k, v in data.model_dump().items()):
+                    prior = self._get(db, bot_id, old["id"])
+                    if any(
+                        old[k] != v for k, v in data.model_dump(exclude={"sender"}).items()
+                    ) or data.sender != (prior.get("app_event") or {}).get("sender"):
                         raise Conflict("An activation was already suggested in this reply.")
                     return dict(old)
             if db.execute(
-                "SELECT 1 FROM bot_triggers WHERE bot_id=? AND kind=? AND instructions=? AND state!='paused'",
-                (bot_id, data.kind, data.instructions),
+                "SELECT 1 FROM bot_triggers t LEFT JOIN app_event_watches w ON w.trigger_id=t.id "
+                "WHERE t.bot_id=? AND t.kind=? AND t.instructions=? AND t.state!='paused' "
+                "AND coalesce(w.sender,'')=? AND coalesce(w.connection_id,'')=?",
+                (
+                    bot_id,
+                    data.kind,
+                    data.instructions,
+                    data.sender or "",
+                    binding[0] if binding else "",
+                ),
             ).fetchone():
                 raise Conflict("This activation already exists. Review it before creating another.")
             trigger_id, now = uid(), time.time()
@@ -174,12 +221,19 @@ class TriggerStore:
             )
             if requested:
                 db.execute("UPDATE bot_triggers SET state='active' WHERE id=?", (trigger_id,))
+            if binding:
+                db.execute(
+                    "INSERT INTO app_event_watches VALUES(?,?,?,?,?,?,NULL,'',?,NULL)",
+                    (trigger_id, data.sender, *binding, now, now + 900),
+                )
             return self._get(db, bot_id, trigger_id)
 
     def edit(self, bot_id: str, data: TriggerEdit, *, source_task_id: str) -> dict:
         with self.store.connect(write=True) as db:
             self.store.direct_request(db, self.owner, bot_id, source_task_id)
             rule = self._get(db, bot_id, data.trigger_id)
+            if data.kind != rule["kind"]:
+                raise Conflict("Create a new routine to change its event type.")
             if rule["revision"] != data.expected_revision:
                 raise Conflict("This routine changed. Read it again before editing.")
             revoke(db, data.trigger_id, "Routine changed; old events will not replay.")
@@ -187,6 +241,11 @@ class TriggerStore:
                 "UPDATE bot_triggers SET name=?,instructions=?,revision=revision+1,updated_at=? WHERE id=?",
                 (data.name, data.instructions, time.time(), data.trigger_id),
             )
+            if data.kind != "file_added":
+                db.execute(
+                    "UPDATE app_event_watches SET sender=? WHERE trigger_id=?",
+                    (data.sender, data.trigger_id),
+                )
             return self._get(db, bot_id, data.trigger_id)
 
     def decide(
@@ -197,6 +256,21 @@ class TriggerStore:
         *,
         source_task_id: str | None = None,
     ) -> dict:
+        binding = None
+        if data.state == "active":
+            with self.store.connect() as db:
+                current = self._get(db, bot_id, trigger_id)
+            if current["kind"] != "file_added" and current["state"] != "active":
+                from .app_events import selected_account
+
+                binding = selected_account(self.apps, bot_id, current["kind"])
+                confirmed = data.connection_id or (current.get("app_event") or {}).get(
+                    "connection_id"
+                )
+                if binding["id"] != confirmed:
+                    raise Conflict(
+                        "The selected app account changed. Review the account and turn this routine on again."
+                    )
         with self.store.connect(write=True) as db:
             if source_task_id:
                 self.store.direct_request(db, self.owner, bot_id, source_task_id)
@@ -207,7 +281,7 @@ class TriggerStore:
             if rule["revision"] != data.expected_revision:
                 raise Conflict("This activation changed. Review its current state.")
             if data.state == "active":
-                if not bot["files_enabled"]:
+                if rule["kind"] == "file_added" and not bot["files_enabled"]:
                     raise Conflict("Files are disabled for this bot.")
                 if rule["state"] == "draft" and rule["source_task_id"]:
                     source = self.store._task(db, self.owner, rule["source_task_id"])
@@ -227,6 +301,19 @@ class TriggerStore:
                 "UPDATE bot_triggers SET state=?,revision=revision+1,bot_updated_at=?,updated_at=? WHERE id=?",
                 (data.state, bot["updated_at"], time.time(), trigger_id),
             )
+            if binding:
+                now = time.time()
+                db.execute(
+                    "UPDATE app_event_watches SET connection_id=?,label=?,grant_revision=?,cursor_at=?,window_end=NULL,page_token='',next_poll=?,notice=NULL WHERE trigger_id=?",
+                    (
+                        binding["id"],
+                        binding.get("label") or binding["id"],
+                        binding["grant_revision"],
+                        now,
+                        now + 900,
+                        trigger_id,
+                    ),
+                )
             return self._get(db, bot_id, trigger_id)
 
     def delete(self, bot_id: str, trigger_id: str) -> None:
@@ -256,7 +343,9 @@ class TriggerStore:
             for row in rules:
                 rule = dict(row)
                 bot = self.store._bot(db, self.owner, rule["bot_id"])
-                if not bot["files_enabled"] or bot["updated_at"] != rule["bot_updated_at"]:
+                if (rule["kind"] == "file_added" and not bot["files_enabled"]) or bot[
+                    "updated_at"
+                ] != rule["bot_updated_at"]:
                     revoke(db, rule["id"], "Bot settings changed; review and enable again.")
                     db.execute(
                         "UPDATE bot_triggers SET state='paused',revision=revision+1,updated_at=? WHERE id=?",
@@ -271,14 +360,18 @@ class TriggerStore:
                     (rule["id"],),
                 )
                 pending = db.execute(
-                    "SELECT d.*,e.payload FROM trigger_deliveries d JOIN activation_events e ON e.id=d.event_id WHERE d.trigger_id=? AND d.state='pending' ORDER BY d.created_at,d.id LIMIT 20",
+                    "SELECT d.*,e.payload,e.created_at AS occurred_at FROM trigger_deliveries d JOIN activation_events e ON e.id=d.event_id WHERE d.trigger_id=? AND d.state='pending' ORDER BY d.created_at,d.id LIMIT 20",
                     (rule["id"],),
                 ).fetchall()
                 if not pending:
                     continue
                 reason = None
                 if pending[0]["created_at"] > now - 5:
-                    reason = "Collecting files added together."
+                    reason = (
+                        "Collecting files added together."
+                        if rule["kind"] == "file_added"
+                        else "Collecting incoming messages."
+                    )
                 elif rule["last_run_at"] is not None and rule["last_run_at"] > now - 60:
                     reason = "Waiting for the one-minute cooldown."
                 elif db.execute(
@@ -325,7 +418,7 @@ class TriggerStore:
                     "kind": rule["kind"],
                     "mode": "review",
                     "events": [
-                        {**json.loads(p["payload"]), "occurred_at": p["created_at"]}
+                        {**json.loads(p["payload"]), "occurred_at": p["occurred_at"]}
                         for p in pending
                     ],
                 }

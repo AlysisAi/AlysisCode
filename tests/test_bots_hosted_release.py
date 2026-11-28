@@ -1,7 +1,12 @@
 """Real source trees and rollback ordering; no cloud or production data changes."""
 
 import hashlib
+import importlib.util
 import json
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,6 +17,49 @@ from alysis_code.bots.hosted_release import (
     qualify_environment,
     verify_release,
 )
+
+
+@pytest.mark.parametrize(
+    ("expires_at", "reason", "database_reads"),
+    [
+        (None, "finite_test_window_required", 0),
+        (99, "test_window_expired", 0),
+        (100, "test_window_expired", 0),
+        (101, "schema_change_requires_reviewed_upgrade", 1),
+    ],
+)
+def test_host_activation_checks_the_approved_window_before_opening_the_database(
+    tmp_path, monkeypatch, expires_at, reason, database_reads
+):
+    pytest.importorskip("fcntl")
+    psycopg = pytest.importorskip("psycopg")
+    identity = pytest.importorskip("azure.identity")
+    script = Path(__file__).resolve().parents[1] / "scripts/bots-hosted/release.py"
+    spec = importlib.util.spec_from_file_location("hosted_activation", script)
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    # Release files are genuinely verified; only the cloud bootstrap and database are substitutes.
+    candidate, previous = tmp_path / "candidate", tmp_path / "previous"
+    release(candidate, schema=59)
+    release(previous, schema=51)
+    monkeypatch.setattr(entry, "time", SimpleNamespace(time=lambda: 100))
+    monkeypatch.setattr(identity, "ManagedIdentityCredential", lambda: nullcontext(None))
+    monkeypatch.setattr(entry.httpx, "Client", lambda **_: nullcontext(None))
+    monkeypatch.setattr(entry.operations, "fetch_bootstrap", lambda *_: b"{}")
+    hosted = SimpleNamespace(expires_at=expires_at, database_dsn="synthetic")
+    monkeypatch.setattr(entry.operations, "bootstrap", lambda _: (None, hosted))
+    db = Mock()
+    db.execute.return_value.fetchone.return_value = (51,)
+    connect = Mock(return_value=nullcontext(db))
+    monkeypatch.setattr(psycopg, "connect", connect)
+    monkeypatch.setattr(
+        entry.operations, "maintenance_store", lambda *_: pytest.fail("Opened maintenance")
+    )
+    config = {"lock_path": str(tmp_path / "lock"), "secret_uri": "synthetic"}
+    assert entry.activate(candidate, previous, config) == {"activated": False, "reason": reason}
+    assert connect.call_count == database_reads
+    if database_reads:
+        db.execute.assert_called_once_with("SELECT version FROM bots_schema WHERE id=1")
 
 
 def release(path, *, schema=36, marker="previous", lock=b"same-dependencies"):

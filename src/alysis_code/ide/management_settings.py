@@ -408,7 +408,16 @@ def _redact_mapping_by_key(value: Any) -> Any:
     return value
 
 
+def _assistant_observation_models(params: dict[str, Any], request_id: RequestId) -> dict[str, Any]:
+    # The Assistant finds its model before each ask. Like the other reads here it only reads
+    # the config, so the desktop's settings process answers it without a new engine.
+    from .assistant_observation import models
+
+    return models(params, request_id)
+
+
 SETTINGS_HANDLERS = {
+    "assistant.observation.models": _assistant_observation_models,
     "config.get": _config_get,
     "config.schema": _config_schema,
     "profile.list": _profile_list,

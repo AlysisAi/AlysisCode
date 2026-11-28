@@ -4,9 +4,12 @@ The engine's own image request (tools/image_generation.py) does the work, as it 
 agent's sessions: the same OpenAI-compatible image endpoint, sizes, limits and checks of the
 returned bytes. An owl is offered create_image and edit_image only while its files are on and
 the model connection it thinks with declares image generation (``Settings.image_generation``:
-on this computer, the person's own image generation settings, for a connection whose endpoint
-takes image requests; in the Cloud, the service's settings). Nothing is decided from a model's
-name or from the words of a request.
+on this computer, account_images.connection_image_generation: the person's own image provider,
+what the account declares for a connection to the account gateway, or the person's settings
+for a connection whose endpoint takes image requests; in the Cloud, the service's settings).
+Nothing is decided from a model's name or from the words of a request. A request names a
+quality only when the person asks for one; otherwise the person's setting applies when it goes
+out, so changing the setting never changes the owl's instructions.
 
 Accounting: each request is one of the task's own provider calls in the owls' call ledger
 (Store._reserve_call), counted against the workspace allowance and the task's ceiling like a
@@ -29,9 +32,14 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from ..config import AppConfig, ImageGenerationConfig
-from ..llm.protocols import OPENAI_COMPAT_PROTOCOL
-from ..tools.image_generation import SIZES, ImageEndpoint, ImageGenerationError, generate_images
+from ..config import IMAGE_QUALITIES, AppConfig, ImageGenerationConfig
+from ..tools.image_generation import (
+    SIZES,
+    ImageEndpoint,
+    ImageGenerationError,
+    generate_images,
+    resolve_quality,
+)
 from . import documents
 from .browser_images import FileImageResult, file_image
 from .models import Input
@@ -43,6 +51,9 @@ from .store import Conflict, LimitReached
 IMAGE_TOOLS = ("create_image", "edit_image")
 EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 Size = Literal[SIZES]  # type: ignore[valid-type]
+Quality = Literal[IMAGE_QUALITIES]  # type: ignore[valid-type]
+# Left out, the person's picture quality setting applies when the request goes out.
+QUALITY_HELP = "Only when the person asks for a picture quality."
 # The longest description a request may give; the engine's own limit.
 MAX_PROMPT = 32_000
 # HTTP answers that mean the account's usage limit, rate limit or credits stopped the request,
@@ -104,13 +115,12 @@ def for_connection(config: ImageGenerationConfig, protocol: str) -> ImageGenerat
 
     The person's image generation settings, when they are on, for a connection the image request
     can reach: one with an image endpoint of its own, or one whose endpoint speaks the
-    OpenAI-compatible protocol, as the request does.
+    OpenAI-compatible protocol, as the request does. Otherwise, signed in to Alysis, what the
+    account declares, with the account's own key.
     """
-    if not config.enabled:
-        return None
-    if config.base_url or protocol == OPENAI_COMPAT_PROTOCOL:
-        return config
-    return None
+    from ..account_images import connection_image_generation
+
+    return connection_image_generation(config, base_url=None, api_key=None, protocol=protocol)
 
 
 def _picture_name(value: str) -> str:
@@ -137,6 +147,7 @@ class CreateImage(Input):
         description="Square 1024x1024, landscape 1536x1024 or portrait 1024x1536; auto lets "
         "the image service choose.",
     )
+    quality: Quality | None = Field(default=None, description=QUALITY_HELP)
     previous_file_id: str | None = Field(
         default=None,
         min_length=1,
@@ -173,6 +184,7 @@ class EditImage(Input):
         description="Square 1024x1024, landscape 1536x1024 or portrait 1024x1536; auto lets "
         "the image service choose.",
     )
+    quality: Quality | None = Field(default=None, description=QUALITY_HELP)
 
     @field_validator("name")
     @classmethod
@@ -199,6 +211,11 @@ class OwlImages(OwlDocuments):
         config = declared(self.settings)
         if config is None:
             raise Conflict(NOT_SET_UP)
+        try:
+            # A quality the service does not accept is refused before any call is counted.
+            resolve_quality(config, args.quality)
+        except ImageGenerationError as error:
+            raise Conflict(_refusal(error)) from None
         if name == "create_image":
             return self._make(
                 task,
@@ -206,6 +223,7 @@ class OwlImages(OwlDocuments):
                 prompt=args.prompt,
                 name=args.name,
                 size=args.size,
+                quality=args.quality,
                 previous_file_id=args.previous_file_id,
                 source=None,
                 image_input=image_input,
@@ -227,6 +245,7 @@ class OwlImages(OwlDocuments):
                 prompt=args.instructions,
                 name=target,
                 size=args.size,
+                quality=args.quality,
                 previous_file_id=previous,
                 source=(file["id"], data),
                 image_input=image_input,
@@ -236,13 +255,15 @@ class OwlImages(OwlDocuments):
     # ------------------------------------------------------------ steps
 
     def _make(
-        self, task, config, *, prompt, name, size, previous_file_id, source, image_input
+        self, task, config, *, prompt, name, size, quality, previous_file_id, source, image_input
     ) -> dict | FileImageResult:
         suffix = "." + name.rsplit(".", 1)[1].casefold()
         made: list[bytes] = []
         self._can_save(task, name, previous_file_id)
         with self._scratch(task) as root:
-            call_id = self._reserve(task, config.model)
+            call_id = self._reserve(
+                task, (config.edit_model or config.model) if source else config.model
+            )
             try:
                 result = self._beside_task(
                     lambda: generate_images(
@@ -252,6 +273,7 @@ class OwlImages(OwlDocuments):
                         prompt=prompt,
                         output_path="picture" + suffix,
                         size=size,
+                        quality=quality,
                         connection=ImageEndpoint(
                             base_url=self.settings.base_url,
                             api_key=self.settings.api_key,

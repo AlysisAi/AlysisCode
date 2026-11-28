@@ -59,6 +59,7 @@ def make_llm_client(
     prompt_cache_key: str | None = None,
     prompt_cache_retention: str | None = None,
     prompt_cache_namespace: str | None = None,
+    disable_prompt_cache: bool = False,
     enable_thinking: bool | None = None,
     reasoning_effort: str | None = None,
     transport: httpx.BaseTransport | None = None,
@@ -113,7 +114,9 @@ def make_llm_client(
             )
     if fixed_reasoning_effort is not None:
         resolved_reasoning_effort: str | None = fixed_reasoning_effort
-        resolved_enable_thinking: bool | None = True
+        resolved_enable_thinking: bool | None = (
+            fixed_reasoning_effort not in {"none", "disabled"} if fixed_reasoning_effort else None
+        )
     else:
         resolved_reasoning_effort, resolved_enable_thinking = client_reasoning_settings(
             cfg,
@@ -198,6 +201,7 @@ def make_llm_client(
         prompt_cache_retention=prompt_cache_retention,
         prompt_cache_namespace=prompt_cache_namespace,
         cache_capability=cache_capability,
+        force_off=disable_prompt_cache,
     )
     cache_policy_metadata = cache_policy.telemetry_metadata()
     credential_scope = credential_scope_fingerprint(api_key)

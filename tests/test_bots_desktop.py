@@ -87,14 +87,42 @@ def test_definite_creation_refusal_has_structured_receipt_and_no_claim(lab):
 
     manager.factory = refuse
     result = manager.call(task(), "computer_run", {"command": "true"}, token(), approved=True)
-    assert result == {
+    assert {key: result[key] for key in ("error", "code", "computer_created", "retryable")} == {
         "error": "Ανεπαρκής χώρος 東京",
         "code": "insufficient_local_storage",
         "computer_created": False,
         "retryable": False,
     }
+    # The state its computer is in, as data the owl words for the person.
+    assert result["computer"] == {"state": "not_enough_disk_space"}
+    assert result["executed"] is False
     assert instances == []
     assert views.current("owner", "bot")[1] is None
+    manager.release("task", cancelled=False)
+
+
+def test_a_computer_that_does_not_start_leaves_the_task_going_without_it(lab):
+    from alysis_code.bots.compute import ComputeError, ComputeUncertain
+
+    manager, views, instances = lab
+
+    def fail(*_, **__):
+        raise ComputeError("provider detail")
+
+    manager.factory = fail
+    result = manager.call(task(), "computer_run", {"command": "true"}, token(), approved=True)
+    # A result the owl reads and words for the person, not a failed task; no detail of the cause.
+    assert result["computer"] == {"state": "start_failed"} and result["executed"] is False
+    assert "provider detail" not in str(result)
+    assert instances == [] and views.current("owner", "bot")[1] is None
+
+    def uncertain(*_, **__):
+        raise ComputeUncertain("Lost creation response")
+
+    # An outcome that is not known (a computer may exist) keeps stopping the task as before.
+    manager.factory = uncertain
+    with pytest.raises(ComputeUncertain):
+        manager.call(task(), "computer_run", {"command": "true"}, token(), approved=True)
     manager.release("task", cancelled=False)
 
 

@@ -10,7 +10,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 | --- | ---: |
 | `blocked_until_security_model` | 10 |
 | `experimental_with_gate` | 0 |
-| `implemented_in_bridge_only` | 46 |
+| `implemented_in_bridge_only` | 48 |
 | `implemented_in_extension` | 309 |
 | `intentionally_cli_only` | 47 |
 | `not_applicable_to_ide` | 27 |
@@ -21,7 +21,7 @@ This report is generated from `docs/generated/ide_cli_parity_matrix.json` and th
 - Backend action metadata entries: 104
 - CLI chat slash commands: 34
 - CLI commands and groups: 133
-- IDE bridge methods: 180
+- IDE bridge methods: 182
 - VS Code package/chat commands: 45
 - VS Code slash commands and aliases: 38
 
@@ -152,6 +152,13 @@ _No entries._
 - Features: `provider.auth.status`
 - Rationale: Fresh native-provider status follows the engine secret-projection rules.
 - Bridge-only rationale: Desktop connection settings consume this optional method. VS Code has typed transport coverage but has not adopted native subscription status in its UI.
+
+### ide.methods.desktop_assistant_observation
+
+- Surface: `ide_bridge_method`
+- Features: `assistant.observation.models`, `assistant.observation.infer`
+- Rationale: Desktop Assist discovers configured vision routes and makes bounded inference requests outside chat sessions.
+- Bridge-only rationale: The desktop app owns Assist screen consent and capture. The VS Code extension has no Assist observation surface.
 
 ### ide.methods.desktop_model_selection
 

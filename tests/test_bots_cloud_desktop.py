@@ -588,9 +588,13 @@ class CheckpointProvider(Provider):
 class CheckpointTasks:
     def __init__(self):
         self.states = {}
+        self.events = []
 
     def task(self, owner, task_id):
         return {"bot_id": "bot", "status": self.states.get(task_id, "running")}
+
+    def event(self, owner, task_id, kind, data):
+        self.events.append((task_id, kind, data))
 
 
 def checkpoint_factory(tmp_path):

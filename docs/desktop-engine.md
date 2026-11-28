@@ -1,6 +1,6 @@
 # Desktop engine contracts
 
-The Alysis desktop app and CLI share the same engine. At startup, the app
+The Alysis Code desktop app and CLI share the same engine. At startup, the app
 checks the engine's identity and negotiates the capabilities it needs.
 
 Update the app's engine pin and dependency recipe in a separate tested app change after
@@ -74,4 +74,4 @@ ALYSIS_MANAGED_CLI_SOURCE=/absolute/path/to/engine ALYSIS_LOCAL_CANDIDATE=1 pnpm
 
 Local-candidate mode derives version and commit from that checkout, without changing `electron/runtime/managedCliRuntimeSource.json`. The builder still requires `scripts/managed-cli-runtime-constraints.txt` to contain the engine's exact candidate version and compatible pinned dependencies. Retain a candidate-only copy of that recipe for validation and restore the committed recipe afterward; permanently changing the app's engine pin/recipe happens after review. Use the app's exported capability validator against the actual CLI output, then package through its ordinary local candidate flow.
 
-Validate the actual installed Alysis app with one completed chat, one completed owl task, and one successful Computer Use turn. Record the installed artifact and runtime identities. A source test, a wheel build or a passing capabilities payload alone does not establish those live workflows. Preserve existing user state and use the app repository's single-bundle installation/rollback instructions. The separate Computer Use MCP completion-gate policy decision is outside this port.
+Validate the actual installed Alysis Code app with one completed chat, one completed owl task, and one successful Computer Use turn. Record the installed artifact and runtime identities. A source test, a wheel build or a passing capabilities payload alone does not establish those live workflows. Preserve existing user state and use the app repository's single-bundle installation/rollback instructions. The separate Computer Use MCP completion-gate policy decision is outside this port.

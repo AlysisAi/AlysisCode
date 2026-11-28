@@ -14,9 +14,10 @@ systems or to secrets rather than to files outside the project:
 These get ``needs_confirm`` (``policy.evaluate_shell_command``): the reviewer decides in
 "Approve for me", a person in "Ask for approval" (which asks for every command anyway), and
 Full access normally runs them. The independent ``github_write_reason`` gate below
-takes precedence for remote writes and unresolved effects: those always need a person,
-unless the sandbox leaves the command no route to a remote. Then only a remote write
-the command states still does; staging, committing and branching follow the mode.
+takes precedence for remote writes and unresolved effects. In a strict native sandbox,
+the caller can route ordinary network-enabled development commands to a reviewer using
+``network_command_reviewable``. With no route to a remote, only a stated remote write
+keeps the remote-write card.
 
 Matching parses the command (``shell_command_lexer``) instead of searching its text, so
 ``echo "git reset --hard"`` is not a reset and ``cmd /c "git clean -fdx"`` is.
@@ -25,6 +26,7 @@ Matching parses the command (``shell_command_lexer``) instead of searching its t
 from __future__ import annotations
 
 import re
+from pathlib import PureWindowsPath
 
 from .read_only_commands import names_credential_file
 from .shell_command_lexer import (
@@ -116,6 +118,113 @@ def review_reasons(command: str, *, dialect: ShellDialect | None = None) -> list
         if reason not in reasons:
             reasons.append(reason)
     return reasons
+
+
+def network_command_reviewable(command: str, dialect: ShellDialect) -> bool:
+    """Common development commands eligible for a decision with internet access.
+
+    This selects an approval reviewer. It never approves or executes a command.
+    Keep compound scripts, credential access and remote mutations on their
+    existing paths. The reviewer sees the full arguments and execution scope.
+    """
+    from .read_only_commands import is_read_only_command
+
+    if is_read_only_command(command, dialect=dialect):
+        return True
+    commands = split_simple_commands(command, dialect=dialect, strict=True)
+    if not commands or len(commands) != 1 or commands[0].redirects:
+        from .conditional_command_review import conditional_inspection_reviewable
+
+        return conditional_inspection_reviewable(command, dialect)
+    words = list(commands[0].words)
+    if not words or any(names_credential_file(arg) for arg in words[1:]):
+        return False
+    program, args = words[0].lower().removesuffix(".exe"), words[1:]
+    if dialect in {"powershell", "cmd"} and words[0].lower() in {
+        "npm.cmd",
+        "pnpm.cmd",
+        "yarn.cmd",
+    }:
+        program = words[0].lower().removesuffix(".cmd")
+    if dialect == "powershell" and program == "new-item":
+        options = [arg.casefold() for arg in args]
+        if options.count("-itemtype") != 1:
+            return False
+        item_type = options.index("-itemtype") + 1
+        return options[item_type : item_type + 1] == ["directory"] and all(
+            not arg.startswith("-") or arg in {"-path", "-name", "-itemtype", "-force"}
+            for arg in options
+        )
+    if program in {"curl", "wget", "invoke-webrequest", "invoke-restmethod"}:
+        # A public download may use flags or a local output path. The reviewer
+        # must decide the destination and effects from the original command.
+        return any(arg.startswith("https://") for arg in args) and all(
+            not arg.startswith(("-", "@"))
+            or arg
+            in {
+                "-f",
+                "-s",
+                "-S",
+                "-L",
+                "-fsSL",
+                "-I",
+                "-o",
+                "-O",
+                "--output",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--fail",
+                "--head",
+                "-Uri",
+                "-OutFile",
+                "-UseBasicParsing",
+            }
+            or (
+                program == "curl"
+                and arg in {"--max-time", "--connect-timeout"}
+                and index + 1 < len(args)
+                and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", args[index + 1]) is not None
+            )
+            for index, arg in enumerate(args)
+        )
+    if program in {"npm", "pnpm", "yarn", "bun"}:
+        if program == "npm" and args[:1] == ["--prefix"]:
+            if len(args) < 3:
+                return False
+            folder = PureWindowsPath(args[1])
+            if (
+                not args[1]
+                or args[1].startswith(("-", "~", "$", "%"))
+                or folder.anchor
+                or ".." in folder.parts
+            ):
+                return False
+            args = args[2:]
+        return bool(args) and args[0] in {"test", "build", "lint", "run", "install", "ci"}
+    interpreters = {
+        "python": {".py"},
+        "python3": {".py"},
+        "py": {".py"},
+        "node": {".js", ".mjs", ".cjs"},
+        "bash": {".sh"},
+        "sh": {".sh"},
+    }
+    if program in interpreters and args:
+        if program in {"python", "python3", "py"} and args[0] == "-m":
+            return len(args) >= 2 and args[1] in {"pytest", "unittest"}
+        script = PureWindowsPath(args[0])
+        return (
+            not args[0].startswith("-")
+            and not script.anchor
+            and ".." not in script.parts
+            and script.suffix.lower() in interpreters[program]
+        )
+    if program in {"cargo", "go", "dotnet"}:
+        return bool(args) and args[0] in {"build", "check", "test"}
+    if program == "make":
+        return args in ([], ["build"], ["test"], ["check"], ["lint"])
+    return program in {"pytest", "rm", "rmdir", "remove-item", "del"}
 
 
 def _reasons(command: str, dialect: ShellDialect, *, depth: int) -> list[str]:

@@ -12,6 +12,33 @@ from alysis_code.bots.store import Conflict, NotFound
 from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
 
 
+def test_assigned_computer_checks_approved_revision_before_import(study):
+    store, task, manager, instances = study
+    manager.store = store
+    source = store.save_file(
+        "owner", task["bot_id"], FileInput(name="source.txt", content="approved")
+    )
+    private = store.save_file(
+        "owner", task["bot_id"], FileInput(name="other.txt", content="unrelated")
+    )
+    task = {
+        **task,
+        "config": {
+            **task["config"],
+            "assignment_access": {"offline_computer": True, "file_ids": [source["id"]]},
+        },
+    }
+    token = EventCancellationToken(threading.Event())
+    before = len(instances)
+    with pytest.raises(Conflict, match="approved input"):
+        manager.call(task, "computer_import_file", {"file_id": private["id"]}, token, approved=True)
+    assert len(instances) == before
+    result = manager.call(
+        task, "computer_import_file", {"file_id": source["id"]}, token, approved=True
+    )
+    assert result["source_file_id"] == source["id"]
+
+
 def test_library_transfer_preserves_actual_bytes_without_model_transcription(study):
     store, task, manager, instances = study
     manager.store = store

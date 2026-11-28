@@ -1,6 +1,6 @@
 # Architecture
 
-Alysis is a local CLI coding agent. It binds to a workspace, builds a
+Alysis Code is a local CLI coding agent. It binds to a workspace, builds a
 runtime session, exposes a controlled set of tools, sends turns to the selected
 model provider, and stores local artifacts so work can be inspected after the
 session ends.
@@ -21,7 +21,7 @@ the desktop remains a presentation client.
 - Explicit workspace binding: file, shell, git, and runtime artifacts are scoped
   to a resolved workspace before a session starts.
 - Host-owned policy: execution mode, sandbox settings, tool availability,
-  approvals, and extension trust are enforced by Alysis, not by model prose.
+  approvals, and extension trust are enforced by Alysis Code, not by model prose.
 - Progressive context: the model receives bounded workspace context and can ask
   for more through tools instead of receiving the entire repository upfront.
 - Inspectable runs: session logs, verification output, and feedback bundles
@@ -39,7 +39,7 @@ The High-level flow is:
    requested directory.
    The resulting `workspace_root` and `active_workdir` are carried through the
    session and tool layer.
-3. Alysis creates a session with prompt context, workspace metadata, allowed
+3. Alysis Code creates a session with prompt context, workspace metadata, allowed
    tools, verification settings, and any enabled extension catalogs.
 4. Every text turn goes straight to the main model with the full per-mode
    agent surface. No pre-turn classification runs: execution posture derives
@@ -47,7 +47,7 @@ The High-level flow is:
    full execution contract), and explicit commands (`/ask` for one read-only
    turn, `/chat` for a minimal no-tools reply) replace inferred intent.
 5. The agent loop sends the current turn to the model provider. If the model
-   requests tool calls, Alysis runs allowed calls through host-owned
+   requests tool calls, Alysis Code runs allowed calls through host-owned
    permission, execution-mode, and sandbox checks — authorization follows the
    actual proposed action, never a prediction about the user's words.
 6. Tool results are appended back to the session, and the autonomous loop
@@ -94,13 +94,13 @@ after return so the next expensive operation is not started.
 
 ### Model Provider Layer
 
-Alysis talks to model providers through configured API profiles. The default
+Alysis Code talks to model providers through configured API profiles. The default
 transport is chat completions, with provider-specific request normalization
 where needed.
 
 Model choice, base URL, API key source, timeout, reasoning options, and role
 overrides are resolved before a session starts. Provider credentials are never
-embedded in project files by Alysis.
+embedded in project files by Alysis Code.
 
 Provider calls use typed transient retry classification. Cause chains are
 inspected for provider throttling, remote-protocol stream truncation,
@@ -150,7 +150,7 @@ validation, and finalization suppresses optional web-search recovery.
 
 ### Workspace And Safety
 
-Alysis resolves a workspace before exposing local tools. Relative
+Alysis Code resolves a workspace before exposing local tools. Relative
 file/search/shell paths are interpreted inside that workspace. Broad paths such
 as a home directory require explicit confirmation or override, and the
 filesystem root is blocked as a workspace root.
@@ -169,7 +169,7 @@ checks before requests are made.
 ### Verification
 
 Verification is treated as part of the runtime contract, not as a free-form
-model convention. Alysis can infer likely commands from the workspace,
+model convention. Alysis Code can infer likely commands from the workspace,
 accept explicit `--verify-cmd` values, and expose a `verify_run` tool when
 verification is enabled for the session.
 
@@ -325,7 +325,7 @@ optimization are denied; edits, foreground shell work, local summaries, and
 bounded high-value verification may still start when hard time remains.
 
 Externally time-bounded hosts add one layer above this controller. A benchmark
-adapter should compute the Alysis deadline from the host framework's final
+adapter should compute the Alysis Code deadline from the host framework's final
 effective agent timeout, after any host timeout multiplier has already been
 applied, then subtract a host reserve for process collection and artifact
 flushing. Verifier and environment-build timeouts are not valid sources for the
@@ -396,7 +396,7 @@ default step ceiling.
 
 ### Extensions
 
-Alysis has several extension points. They are intentionally separated so
+Alysis Code has several extension points. They are intentionally separated so
 each has a clear trust model.
 
 - MCP connects external Model Context Protocol servers. User configuration is
@@ -435,7 +435,7 @@ deadline, diagnostic, or compatibility behavior should also follow the
 
 ### Server Mode
 
-Server mode exposes Alysis through an HTTP API for managed runs and worker
+Server mode exposes Alysis Code through an HTTP API for managed runs and worker
 jobs. It reuses the same workspace binding, execution modes, tool policy, and
 artifact model as the CLI.
 
@@ -443,7 +443,7 @@ See [Server mode](server.md) for API and deployment details.
 
 ## Local State And Artifacts
 
-Alysis writes local state for sessions, logs, verification output,
+Alysis Code writes local state for sessions, logs, verification output,
 knowledge artifacts, tool-output artifacts, and feedback exports. Runtime
 artifacts are kept separate from source files and are excluded from normal
 project work whenever possible.
@@ -460,7 +460,7 @@ and feedback export.
 
 ## Trust Boundaries
 
-Alysis keeps trust-boundary decisions in the host runtime: external content
+Alysis Code keeps trust-boundary decisions in the host runtime: external content
 may inform a session, but it cannot override system instructions, user
 instructions, execution mode, sandbox settings, workspace binding, or host-owned
 policy checks.

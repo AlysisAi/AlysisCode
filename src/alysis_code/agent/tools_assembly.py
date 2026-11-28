@@ -201,6 +201,7 @@ from ..tools.image_generation import (
     ImageGenerationError,
     generate_images,
     plan_image_output_paths,
+    resolve_quality,
 )
 from ..tools.registry import (
     REPORT_BLOCKER_MAX_MESSAGE_CHARS,
@@ -1071,6 +1072,14 @@ def skill_read_runner(
     return _skill_read
 
 
+def _image_quality_preview(settings: Any, requested: Any) -> str:
+    """The quality an image request will go out with, for its approval preview."""
+    try:
+        return resolve_quality(settings, str(requested or "") or None)
+    except ImageGenerationError:
+        return str(requested)
+
+
 def build_tools(
     *,
     root: Path,
@@ -1608,7 +1617,13 @@ def build_tools(
         return "This command deletes " + "; ".join(described)
 
     def _contained_delete_reason(
-        cmd: str, refusal: str, *, tool_name: str, access_grant, durable_execution: bool
+        cmd: str,
+        refusal: str,
+        *,
+        tool_name: str,
+        access_grant,
+        durable_execution: bool,
+        network_backend: str | None = None,
     ) -> str | None:
         """Why a refused recursive delete is decided instead, or ``None`` to keep the refusal.
 
@@ -1634,9 +1649,9 @@ def build_tools(
             or not refusal.startswith("Recursive delete")
         ):
             return None
-        if _bounding_sandbox(cmd, tool_name, access_grant, durable=durable_execution) != (
-            "windows-mxc"
-        ):
+        if network_backend != "windows-mxc" and _bounding_sandbox(
+            cmd, tool_name, access_grant, durable=durable_execution
+        ) != ("windows-mxc"):
             return None
         return (
             f"{refusal}. It runs in the sandbox, so it can remove files only in the "
@@ -1664,6 +1679,7 @@ def build_tools(
         cmd: str,
         *,
         tool_name: str,
+        cwd: str | None,
         concern: str | None = None,
         session_grant_allowed: bool = True,
     ) -> None:
@@ -1684,6 +1700,7 @@ def build_tools(
                 reason=f"{concern}. {reason}" if concern else reason,
                 preview=cmd,
                 command=cmd,
+                metadata={"cwd": str(root / (cwd or "."))},
                 allow_for_session_scope=exact_command_scope(cmd, kind=tool_name)
                 if session_grant_allowed
                 else None,
@@ -2175,8 +2192,8 @@ def build_tools(
         command gets more than that (``git_native.programs_exposed``). A
         literal push keeps the person there too: what it changes is a remote.
 
-        Seatbelt bounds a command that has no route to a remote, so any grant
-        keeps the person. MXC bounds a command as a sandbox: extra
+        Seatbelt bounds a command that has no route to a remote, including
+        after a folder-only grant reviewed in auto mode. MXC bounds a command as a sandbox: extra
         access (network, a local preview, folders) is requested and goes
         through the access review, and that review is the decision about it.
         Credentials are never part of that and keep the person.
@@ -2185,6 +2202,7 @@ def build_tools(
         from ..sandbox_runner import LazyShellRunner, contained_backend
 
         reviewed = None
+        scoped_backend = None
         if tool_name == "verify_run":
             scopes: list[object] = [verify_scope_settings]
         elif (
@@ -2193,7 +2211,10 @@ def build_tools(
             and not durable
         ):
             if access_grant.settings != host_file_settings:
-                if contained_backend(access_grant.settings, reviewed_access=True) != "windows-mxc":
+                scoped_backend = contained_backend(access_grant.settings, reviewed_access=True)
+                if scoped_backend is None and mode == "auto":
+                    scoped_backend = contained_backend(access_grant.settings)
+                if scoped_backend is None:
                     return None
                 reviewed = access_grant.settings
             if tool_name == "shell_run":
@@ -2219,6 +2240,8 @@ def build_tools(
             if found is None or backend not in {None, found}:
                 return None
             backend = found
+        if scoped_backend is not None and scoped_backend != backend:
+            return None
         if backend == "seatbelt":
             if tool_name == "verify_run":
                 from ..verify_gate import glob_expansion_may_yield_git
@@ -2345,6 +2368,74 @@ def build_tools(
                 dialect = "powershell"
         return dialect
 
+    def _network_review_scope(cmd: str, tool_name: str, access_grant, dialect) -> str | None:
+        """Review a network-enabled operation only when its native runner is known."""
+        from ..command_review_rules import network_command_reviewable
+        from ..sandbox_runner import LazyShellRunner, network_review_backend
+        from ..windows_mxc import WindowsMxcRunner
+
+        if mode != "auto" or tool_name not in {"shell_run", "verify_run"}:
+            return None
+        if tool_name == "verify_run":
+            scope = launcher = runner = verify_scope_settings
+        else:
+            scope = access_grant.settings if access_grant is not None else host_file_settings
+            launcher = host_file_settings
+            runner = shell_runner
+            if isinstance(runner, LazyShellRunner):
+                runner = runner.resolved_runner or runner.execution_settings
+        if getattr(scope, "network", None) != "on" or not network_command_reviewable(cmd, dialect):
+            return None
+        backend = network_review_backend(scope)
+        if (
+            not backend
+            or network_review_backend(launcher) != backend
+            or network_review_backend(runner) != backend
+        ):
+            return None
+        runner_settings = runner.settings if type(runner) is WindowsMxcRunner else runner
+        if (runner_settings.network, runner_settings.network_domains) != (
+            launcher.network,
+            launcher.network_domains,
+        ):
+            return None
+        if backend == "seatbelt":
+            from ..macos_git import git_metadata_writes
+            from ..verify_gate import glob_expansion_may_yield_git
+
+            if (
+                dialect != "posix"
+                or git_metadata_writes(cmd)
+                or (tool_name == "verify_run" and glob_expansion_may_yield_git(cmd))
+            ):
+                return None
+        else:
+            from ..git_native import programs_exposed, writes_a_remote
+            from ..windows_sandbox import git_directory_left_writable
+
+            if (
+                dialect != "powershell"
+                or git_directory_left_writable(root, scope)
+                or programs_exposed(cmd, scope)
+                or writes_a_remote(cmd)
+            ):
+                return None
+        return backend
+
+    def _network_review_metadata(settings, cwd: str) -> dict[str, object]:
+        return {
+            "access": "network",
+            "cwd": cwd,
+            "review_action": {
+                "outbound_network": True,
+                "network_domains": settings.network_domains,
+                "additional_read_folders": tuple(
+                    dict.fromkeys((*settings.additional_read_roots, *settings.windows_read_roots))
+                ),
+                "additional_write_folders": settings.additional_workspace_roots,
+            },
+        }
+
     def _require_github_write_approval(
         cmd: str,
         *,
@@ -2377,6 +2468,23 @@ def build_tools(
             # Seatbelt runs /bin/sh. A PowerShell hint means something that
             # executes commands here is not the sandbox that was certified.
             contained_by = None
+        if tool_name == "verify_run" and _network_review_scope(
+            cmd, tool_name, access_grant, dialect
+        ):
+            directory = ExecutionDirectoryIdentity.capture(str(root))
+            choice = _request_action_approval(
+                ApprovalRequest(
+                    kind=tool_name,
+                    reason="Verification command can access the internet.",
+                    command=cmd,
+                    preview=cmd,
+                    metadata=_network_review_metadata(verify_scope_settings, directory.path),
+                )
+            )
+            if not choice.allow:
+                raise ApprovalDeclinedError(tool_name)
+            directory.check()
+            return directory
         inherited_route = None
         if contained_by == "windows-mxc" and not credential_access:
             # The sandbox, and whatever access was reviewed for this command,
@@ -2518,14 +2626,6 @@ def build_tools(
                 f"Blocked fullaccess shell command by denylist pattern: {matched_pattern}",
                 denial_code="command_denylist_denied",
             )
-        remote_write = _require_github_write_approval(
-            cmd,
-            tool_name=tool_name,
-            cwd=cwd,
-            access_grant=access_grant,
-            scoped_execution=scoped_execution,
-            durable_execution=durable_execution,
-        )
         if mode == "readonly" and not is_full_access_mode:
             raise AgentRuntimeError(
                 f"Blocked in readonly mode: {tool_name}", denial_code="readonly_denied"
@@ -2537,6 +2637,19 @@ def build_tools(
             tool_name=tool_name,
             scoped_execution=scoped_execution,
             durable_execution=durable_execution,
+        )
+        network_backend = _network_review_scope(cmd, tool_name, access_grant, dialect)
+        remote_write = (
+            None
+            if network_backend
+            else _require_github_write_approval(
+                cmd,
+                tool_name=tool_name,
+                cwd=cwd,
+                access_grant=access_grant,
+                scoped_execution=scoped_execution,
+                durable_execution=durable_execution,
+            )
         )
         critical = _critical_delete_reason(cmd, cwd, dialect)
         operation_approved = (
@@ -2559,6 +2672,7 @@ def build_tools(
                 tool_name=tool_name,
                 access_grant=access_grant,
                 durable_execution=durable_execution,
+                network_backend=network_backend,
             )
             if contained_delete is None:
                 raise AgentRuntimeError(
@@ -2582,6 +2696,7 @@ def build_tools(
             _approve_unsandboxed_command(
                 cmd,
                 tool_name=tool_name,
+                cwd=cwd,
                 concern=critical
                 or each_time
                 or (f"sensitive command: {decision.reason}" if decision.needs_confirm else None),
@@ -2590,7 +2705,12 @@ def build_tools(
             return remote_write
         if remote_write and critical is None and each_time is None:
             return remote_write
-        if critical is None and each_time is None and is_read_only_command(cmd, dialect=dialect):
+        if (
+            not network_backend
+            and critical is None
+            and each_time is None
+            and is_read_only_command(cmd, dialect=dialect)
+        ):
             # Commands that only look need no mode-level approval once the runner's
             # sandbox/fallback requirements are satisfied; see read_only_commands.
             return remote_write
@@ -2608,6 +2728,7 @@ def build_tools(
                     or "review mode requires confirmation for shell commands",
                     preview=cmd,
                     command=cmd,
+                    metadata={"cwd": str(root / (cwd or "."))},
                     allow_for_session_scope=None
                     if critical or each_time
                     else exact_command_scope(cmd, kind=tool_name),
@@ -2622,6 +2743,7 @@ def build_tools(
         concern = (
             critical
             or each_time
+            or ("This sandboxed command can access the internet." if network_backend else None)
             or (
                 f"sensitive command: {decision.reason}"
                 if decision.needs_confirm and not yes
@@ -2642,20 +2764,34 @@ def build_tools(
                     "Confirmation required for sensitive command. Re-run with --yes or adjust plan.",
                     denial_code="approval_required",
                 )
+            directory = (
+                ExecutionDirectoryIdentity.capture(str((root / (cwd or ".")).resolve()))
+                if network_backend
+                else None
+            )
             choice = _request_action_approval(
                 ApprovalRequest(
                     kind=tool_name,
                     reason=concern,
                     preview=cmd,
                     command=cmd,
+                    metadata=_network_review_metadata(
+                        access_grant.settings if access_grant else host_file_settings,
+                        directory.path,
+                    )
+                    if directory
+                    else {"cwd": str(root / (cwd or "."))},
                     allow_for_session_scope=None
-                    if critical or each_time
+                    if critical or each_time or network_backend
                     else exact_command_scope(cmd, kind=tool_name),
                 ),
                 operation_approved=operation_approved,
             )
             if not choice.allow:
                 raise ApprovalDeclinedError(tool_name)
+            if directory is not None:
+                directory.check()
+                return directory
         return remote_write
 
     def guard_terminal_op(op_name: str) -> None:
@@ -3901,7 +4037,7 @@ def build_tools(
                 f"paths: {', '.join(relative_paths)}\n"
                 f"count: {count}\n"
                 f"size: {str(args.get('size') or 'auto')}\n"
-                f"quality: {str(args.get('quality') or 'auto')}\n"
+                f"quality: {_image_quality_preview(cfg.image_generation, args.get('quality'))}\n"
                 f"background: {str(args.get('background') or 'auto')}"
             )
             guard_write("image_generate", preview, files=relative_paths)
@@ -3909,22 +4045,62 @@ def build_tools(
                 _guard_host_file_path(relative_path, write=True)
             publication: dict[str, Any] = {}
             if contained_read_tools is not None:
+                # A picture is paid for when the service makes it. Prove the contained writer
+                # can reach each output folder first, so a sandbox that can't save never
+                # costs a picture.
+                for folder in sorted(
+                    {PurePosixPath(relative).parent.as_posix() for relative in relative_paths}
+                ):
+                    try:
+                        contained_read_tools.run_write(
+                            "fs_mkdir",
+                            {"path": folder, "parents": True, "exist_ok": True},
+                            cancel_check=_cancellation_probe(
+                                args.get(_SHELL_CANCELLATION_TOKEN_ARG)
+                            ),
+                            timeout_s=int(
+                                deadline_timeout_or_raise(
+                                    execution_deadline, 30.0, operation="fs_mkdir"
+                                )
+                            ),
+                        )
+                    except DeadlineExhausted:
+                        raise
+                    except Exception as exc:
+                        raise AgentRuntimeError(
+                            "Image generation stopped before asking for the picture: files "
+                            f"can't be saved in {folder} ({exc}). Nothing was made or charged."
+                        ) from exc
 
                 def publish_generated_image(target: Path, payload: bytes) -> None:
                     relative = target.relative_to(root.resolve()).as_posix()
                     _guard_host_file_path(relative, write=True)
-                    contained_read_tools.run_write(
-                        "image_create_bytes",
-                        {"path": relative, "payload": base64.b64encode(payload).decode("ascii")},
-                        cancel_check=_cancellation_probe(args.get(_SHELL_CANCELLATION_TOKEN_ARG)),
-                        timeout_s=int(
-                            deadline_timeout_or_raise(
-                                execution_deadline,
-                                30.0,
-                                operation="image_create_bytes",
-                            )
-                        ),
-                    )
+                    try:
+                        contained_read_tools.run_write(
+                            "image_create_bytes",
+                            {
+                                "path": relative,
+                                "payload": base64.b64encode(payload).decode("ascii"),
+                            },
+                            cancel_check=_cancellation_probe(
+                                args.get(_SHELL_CANCELLATION_TOKEN_ARG)
+                            ),
+                            timeout_s=int(
+                                deadline_timeout_or_raise(
+                                    execution_deadline,
+                                    30.0,
+                                    operation="image_create_bytes",
+                                )
+                            ),
+                        )
+                    except (DeadlineExhausted, ImageGenerationError):
+                        raise
+                    except Exception as exc:
+                        raise ImageGenerationError(
+                            f"the picture was made, and charged, but couldn't be saved to "
+                            f"{relative} ({exc}). Asking again makes and charges another "
+                            "picture; fix saving in this folder first"
+                        ) from exc
 
                 publication["publish"] = publish_generated_image
             try:
@@ -3936,7 +4112,8 @@ def build_tools(
                     output_path=str(args.get("output_path") or ""),
                     count=count,
                     size=str(args.get("size") or "auto"),
-                    quality=str(args.get("quality") or "auto"),
+                    # Left out, the person's picture quality setting applies.
+                    quality=str(args.get("quality") or "") or None,
                     background=str(args.get("background") or "auto"),
                     timeout_s=_deadline_timeout(
                         cfg.image_generation.timeout_s,
@@ -7411,7 +7588,12 @@ def build_tools(
                             ),
                             preview=(
                                 f"Run MCP tool\nserver: {_catalog['server_id']}\ntool: {_tool['name']}"
-                                f"\nargs:\n{preview_args}"
+                                + (
+                                    f"\naccount: {_catalog['connection_id']}"
+                                    if _catalog.get("connection_id")
+                                    else ""
+                                )
+                                + f"\nargs:\n{preview_args}"
                             ),
                             command=connector_tool_name(_catalog["plugin_id"], _tool["name"]),
                             metadata={
@@ -7424,6 +7606,11 @@ def build_tools(
                                     "connector": "Hub",
                                     "service": _catalog["name"],
                                     "tool": _tool["name"],
+                                    **(
+                                        {"connection_id": _catalog["connection_id"]}
+                                        if _catalog.get("connection_id")
+                                        else {}
+                                    ),
                                 },
                                 **(
                                     {
@@ -7449,7 +7636,10 @@ def build_tools(
                         )
                 try:
                     result = hub_apps.HubAppsClient.from_saved_account().call(
-                        _catalog["catalog_id"], _tool["name"], args
+                        _catalog["catalog_id"],
+                        _tool["name"],
+                        args,
+                        connection_id=_catalog.get("connection_id"),
                     )
                 except hub_apps.HubAppsError as exc:
                     raise AgentRuntimeError(
@@ -7479,7 +7669,7 @@ def build_tools(
                     description=build_host_owned_mcp_tool_description(
                         server_id=catalog["server_id"],
                         tool_name=hub_tool["name"],
-                        server_description=hub_tool["description"],
+                        server_description=f"{catalog['name']}. {hub_tool['description']}",
                     ),
                     parameters=tool_parameters(hub_tool),
                     run=_run_hub,

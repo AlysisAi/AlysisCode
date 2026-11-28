@@ -51,6 +51,25 @@ def test_real_command_creates_editable_file_and_rejects_overwrite(tmp_path):
     assert not list(tmp_path.glob(".alysis-office-*"))
 
 
+def test_file_created_during_inspection_keeps_its_bytes(tmp_path, monkeypatch):
+    from alysis_code.office import word
+
+    output = tmp_path / "result.docx"
+    inspect = word.inspect
+
+    def competing_write(staged):
+        result = inspect(staged)
+        output.write_bytes(b"Already published by another writer")
+        return result
+
+    monkeypatch.setattr(word, "inspect", competing_write)
+    (tmp_path / "request.json").write_text('{"blocks":[{"kind":"paragraph","text":"sample"}]}')
+    with pytest.raises(FileExistsError):
+        run(args(tmp_path))
+    assert output.read_bytes() == b"Already published by another writer"
+    assert not list(tmp_path.glob(".alysis-office-*"))
+
+
 def test_command_rejects_symlink_and_escape_outputs_before_writing(tmp_path):
     (tmp_path / "request.json").write_text('{"blocks":[{"kind":"paragraph","text":"sample"}]}')
     link = tmp_path / "linked"
@@ -187,7 +206,7 @@ def test_cli_describe_and_json_error(tmp_path):
     assert json.loads(result.stdout)["status"] == "error"
 
 
-@pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="POSIX Office renderer")
+@pytest.mark.skipif(sys.platform not in {"darwin", "linux", "win32"}, reason="Office renderer")
 def test_preview_directory_publication_is_complete_and_exclusive(tmp_path):
     from alysis_code.office.rendering import _publish_directory
 
@@ -203,6 +222,57 @@ def test_preview_directory_publication_is_complete_and_exclusive(tmp_path):
     _publish_directory(stage, destination)
     assert not stage.exists()
     assert (destination / "page.png").read_bytes() == b"complete"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows converter Job Object")
+def test_windows_converter_descendants_are_contained(tmp_path):
+    import psutil
+
+    from alysis_code.office.rendering import _converter_process
+
+    pid_file = tmp_path / "child.pid"
+    command = [
+        sys.executable,
+        "-I",
+        "-c",
+        (
+            "import pathlib,subprocess,sys; "
+            "child = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(30)']); "
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid))"
+        ),
+        str(pid_file),
+    ]
+    with (tmp_path / "log").open("wb") as log, _converter_process(command, log) as process:
+        assert process.wait(timeout=15) == 0
+        child = psutil.Process(int(pid_file.read_text()))
+        assert child.is_running()
+    assert not child.is_running()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows converter Job Object")
+def test_windows_converter_is_never_released_without_its_job(tmp_path, monkeypatch):
+    from alysis_code.office.rendering import _converter_process
+
+    marker = tmp_path / "started"
+    command = [
+        sys.executable,
+        "-I",
+        "-c",
+        "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+        str(marker),
+    ]
+
+    def refuse(_process):
+        raise OSError("job allocation refused")
+
+    monkeypatch.setattr("alysis_code._windows_sandbox_job.WindowsSandboxJob", refuse)
+    with (
+        (tmp_path / "log").open("wb") as log,
+        pytest.raises(OSError, match="job allocation refused"),
+    ):
+        with _converter_process(command, log):
+            pytest.fail("converter started without being assigned to an owned job")
+    assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX renderer process group")

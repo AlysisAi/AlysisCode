@@ -1,6 +1,7 @@
 """A task's progress as it happens (POST /v1/tasks/{id}/events, task_events.py): a waiting
 request answers as soon as an event is written, an empty answer comes after the bounded wait,
-``after`` is honoured, the owl's draft reply never appears, and another owner's task is refused.
+``after`` is honoured, the owl's draft reply shows only while it is checked, and another owner's
+task is refused.
 """
 
 from __future__ import annotations
@@ -212,9 +213,10 @@ def test_another_owners_task_is_refused(tmp_path):
         assert not store.task_signals._waiters
 
 
-def test_a_draft_reply_never_reaches_the_feed(tmp_path):
-    """A first draft the reply checker withholds, then a reply it passes: neither draft shows in
-    the feed while the turn works, and the withheld one never does."""
+def test_the_draft_reaches_the_feed_only_while_it_is_checked(tmp_path):
+    """A first draft the reply checker withholds, then a reply it passes: each draft shows in the
+    feed while it is checked, the withheld one is withdrawn and its text never shows again, and
+    the checker's verdicts and the suggested next messages stay withheld."""
     withheld = "Το αρχείο 東京.txt αποθηκεύτηκε."
     reply = "Δεν αποθήκευσα ακόμα το αρχείο."
     suggestion = "Αποθήκευσέ το τώρα"
@@ -229,10 +231,17 @@ def test_a_draft_reply_never_reaches_the_feed(tmp_path):
     def feed():
         body = client.post(path, json={"after": 0}).json()
         seen.append(body)
-        return json.dumps(body, ensure_ascii=False)
+        return body
+
+    def drafts(body):
+        return [
+            (event["kind"], event["data"])
+            for event in body["events"]
+            if event["kind"].startswith("reply_draft")
+        ]
 
     def first_review(_request):
-        assert withheld not in feed()
+        assert drafts(feed()) == [("reply_draft", {"draft": 1, "text": withheld})]
         return LLMResponse(
             json.dumps(
                 {
@@ -249,8 +258,15 @@ def test_a_draft_reply_never_reaches_the_feed(tmp_path):
         )
 
     def second_review(_request):
-        text = feed()
-        assert withheld not in text and reply not in text and suggestion not in text
+        body = feed()
+        # The withheld draft is gone; the new one, without its suggestion, takes its place.
+        assert drafts(body) == [
+            ("reply_draft", {"draft": 1}),
+            ("reply_draft_withdrawn", {"draft": 1}),
+            ("reply_draft", {"draft": 2, "text": reply}),
+        ]
+        text = json.dumps(body, ensure_ascii=False)
+        assert withheld not in text and suggestion not in text
         return LLMResponse(
             '{"decision":"ready","reason":"Honest status."}', [], {}, usage=LLMUsage(3, 2, 5)
         )
@@ -295,6 +311,12 @@ def test_a_draft_reply_never_reaches_the_feed(tmp_path):
     held = [event for event in body["events"] if event.get("withheld")]
     assert {event["kind"] for event in held} == {"reply_review_finished", "reply_suggestions"}
     assert all(event["data"] == {} for event in held)
+    # Once the reply is published the drafts carry no text: the conversation has the reply.
+    assert drafts(body) == [
+        ("reply_draft", {"draft": 1}),
+        ("reply_draft_withdrawn", {"draft": 1}),
+        ("reply_draft", {"draft": 2}),
+    ]
     assert len(seen) == 2
 
 

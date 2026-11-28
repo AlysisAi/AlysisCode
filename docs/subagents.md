@@ -228,7 +228,7 @@ alysis config set subagent_orchestration.parallel_nonwriting_shared false
 ### Isolated workspaces
 
 Pass `workspace_view=isolated` to `subagent_run` when a child should work away from the parent's
-working tree. Alysis snapshots the parent's current files into an internal Git commit and
+working tree. Alysis Code snapshots the parent's current files into an internal Git commit and
 creates a detached worktree under the session artifact directory: `subagent_worktrees/<run_id>`.
 The snapshot includes tracked edits and deletions plus nonignored untracked files, without modifying
 the parent's HEAD, index, or files; staging intent is not copied. Files requiring configured external
@@ -460,13 +460,27 @@ alysis config set image_generation.base_url https://api.openai.com/v1
 
 Instead of `ALYSIS_IMAGE_API_KEY`, set
 `image_generation.api_key_env` to the name of a provider-specific environment variable. If neither
-is configured, Alysis reuses the active session credential. Generation accepts PNG, JPEG, and
+is configured, Alysis Code reuses the active session credential. Generation accepts PNG, JPEG, and
 WebP output paths, creates one to four new files, validates decoded image dimensions and format,
 and never overwrites an existing file.
 
 Optional safety and provider limits are configurable through
 `image_generation.timeout_s`, `image_generation.max_images_per_call`,
 `image_generation.max_image_bytes`, and `image_generation.max_pixels`.
+
+`image_generation.quality` is your picture quality: `low`, `medium` (the default), `high`,
+`xhigh`, `max`, or `auto` to let the provider choose. It applies whenever a request names no
+quality; the agent names one only when you ask for it in the chat ("make this one max quality").
+The setting is applied as the request goes out and is never written into the model's
+instructions, so changing it does not reset the chat's prompt cache.
+`image_generation.edit_model` changes existing pictures with a different model than
+`image_generation.model`; left empty, one model does both.
+
+Signed in to Alysis, you make pictures with your account whatever model you think with (the
+Alysis account itself, your own provider's key, or a plan subscription), unless you set up an
+image provider of your own: the models and the qualities the account's image service declares,
+billed in credits, and your quality setting still applies. Only your Alysis key goes to the
+account's image service; the key of the connection you chat with never does.
 
 ### Exercise a built-in through chat
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 import sqlite3
 import time
 import unicodedata
@@ -14,10 +15,19 @@ from typing import Any
 from uuid import uuid4
 
 from . import failures
+from .assistant_profile import ASSISTANT_PROFILE
 from .browser_tools import STEP_VARIANTS
 from .file_revisions import migrate as migrate_file_revisions
 from .files import FILE_CHUNK_BYTES, INLINE_FILE_BYTES, MAX_FILE_BYTES, FileQuery
 from .models import (
+    ASSIGNMENT_FILES,
+    INTERACTIVE_HTML_BYTES,
+    AssignmentInput,
+    AssignmentVerification,
+    AssistantAssignmentApproval,
+    AssistantOwlCreateInput,
+    AssistantOwlDraftInput,
+    AssistantScreenRequest,
     BotCreateInput,
     BotDuplicateInput,
     BotInput,
@@ -25,10 +35,13 @@ from .models import (
     ConversationPageQuery,
     FileInput,
     HistoryQuery,
+    InteractiveStateWrite,
+    InteractiveTarget,
     IntroInput,
     MemoryInput,
     NoteConsolidation,
     NoteInput,
+    OwlAssignmentProposal,
     RegenerateInput,
     ReplyReviewSettings,
     TaskInput,
@@ -44,6 +57,7 @@ from .scheduling import (
     ON_TIME_SECONDS,
     PAUSE_REASONS,
     RETRY_DELAYS_SECONDS,
+    AssignmentScheduleInput,
     RunFailure,
     ScheduleInput,
     ScheduleModelChoice,
@@ -56,7 +70,7 @@ from .scheduling import (
     upcoming_runs,
 )
 from .schema import SCHEMA_VERSION, STEER_COLUMNS, STEER_INDEX, schema
-from .task_events import TaskSignals
+from .task_events import DRAFT_SETTLED_BY, REPLY_DRAFT, REPLY_DRAFT_WITHDRAWN, TaskSignals
 from .text_search import excerpt, loose_contains, loose_fold
 
 ACTIVE = ("queued", "running", "waiting", "cancelling")
@@ -71,15 +85,26 @@ CALL_PURPOSES = frozenset(
         "history_summary",  # the summary of earlier chats (context_summary.py)
         "progress_summary",  # the progress record of a long turn (context_summary.py)
         "memory_index",  # sorting saved memories for retrieval (memory_applicability.py)
+        "room_routing",
         "research_helper",  # a research helper's own step (research_helpers.py)
         "image",  # making or editing a picture (owl_images.py)
         "computer_work",  # a step of work on the owl's computer (execution.py)
         "work_compaction",  # compacting that work's context (execution.py)
         "coding",  # a coding job's step (coding.py)
         "peer",  # another owl answering a peer request (cooperation.py)
+        "assignment",  # an assigned owl working on a task the person approved (runtime.py)
     }
 )
 TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+ASSIGNMENT_PAGE_SIZE = 20
+ASSIGNMENT_PAGE_BYTES = 2 * 1024 * 1024
+ASSIGNMENT_RESULT_BYTES = 128 * 1024
+
+_BOT_SELECT = (
+    "SELECT b.*, a.bot_id IS NOT NULL AS managed_assistant, c.bot_id=b.id AS assistant_enabled "
+    "FROM bots b LEFT JOIN owl_assistants a ON a.owner=b.owner AND a.bot_id=b.id "
+    "LEFT JOIN owl_coordinators c ON c.owner=a.owner "
+)
 # SQL on ``schedule_runs r``: when the run checked and found nothing new to report (its task's
 # nothing_new event), or NULL.
 NOTHING_NEW_AT = (
@@ -99,11 +124,20 @@ class ChatScope:
 
     value: str
     room: bool = False
+    thread_bot: str | None = None
+    default_chat: bool = False
 
     @property
     def chats(self) -> str:
         """SQL on ``chats c``."""
-        return "c.id=?" if self.room else f"c.bot_id=? AND c.id NOT IN ({_ROOM_CHATS})"
+        if self.room or self.thread_bot:
+            return "c.id=?"
+        clause = f"c.bot_id=? AND c.id NOT IN ({_ROOM_CHATS})"
+        return (
+            clause + " AND c.id NOT IN (SELECT chat_id FROM owl_chat_threads)"
+            if self.default_chat
+            else clause
+        )
 
     @property
     def tasks(self) -> str:
@@ -111,7 +145,14 @@ class ChatScope:
         tombstones."""
         if self.room:
             return "t.chat_id=? AND t.owner=(SELECT r.owner FROM rooms r WHERE r.id=t.chat_id)"
-        return f"t.bot_id=? AND t.chat_id NOT IN ({_ROOM_CHATS})"
+        if self.thread_bot:
+            return "t.chat_id=?"
+        clause = f"t.bot_id=? AND t.chat_id NOT IN ({_ROOM_CHATS})"
+        return (
+            clause + " AND t.chat_id NOT IN (SELECT chat_id FROM owl_chat_threads)"
+            if self.default_chat
+            else clause
+        )
 
 
 class NotFound(Exception):
@@ -124,6 +165,21 @@ class Conflict(Exception):
 
 class BackgroundInstructionsPending(Conflict):
     """A read-only model step was not admitted; refresh exact user updates."""
+
+
+def _access_needs(access: dict) -> RoutineNeeds:
+    """The computer, browser and websites a computer task's card lists, as a routine's needs."""
+    return RoutineNeeds(
+        offline_computer=bool(access.get("offline_computer")),
+        online_browser=bool(access.get("online_browser")),
+        sites=access.get("sites") or [],
+    )
+
+
+class AssignmentRoutineBlocked(Conflict):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(PAUSE_REASONS[code])
 
 
 class LimitReached(Exception):
@@ -147,6 +203,29 @@ def uid() -> str:
 
 def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def public_task(task: dict) -> dict:
+    """Drop the worker's DOM locator and geometry when projecting its task for chat."""
+    if "interactive_target" in task.get("config", {}):
+        return {
+            **task,
+            "config": {k: v for k, v in task["config"].items() if k != "interactive_target"},
+        }
+    return task
+
+
+# The owl reads the brief; steps the person taught travel at its end, numbered in order. The
+# desktop app finds them by this heading to show them as a list, so the wording stays as it is.
+TAUGHT_STEPS_HEADING = "Steps the person showed or described, in order:"
+
+
+def brief_with_steps(brief: str, steps: list[str]) -> str:
+    """The brief an owl receives: the approved text, then any taught steps as a numbered list."""
+    if not steps:
+        return brief
+    lines = "\n".join(f"{number}. {' '.join(step.split())}" for number, step in enumerate(steps, 1))
+    return f"{brief}\n\n{TAUGHT_STEPS_HEADING}\n{lines}"
 
 
 class _Connection(sqlite3.Connection):
@@ -184,6 +263,12 @@ class Store:
             if version not in range(SCHEMA_VERSION + 1):
                 raise RuntimeError("Unsupported Bots database version; use a compatible runtime.")
             db.executescript(schema())
+            if "work_scope" not in {
+                row[1] for row in db.execute("PRAGMA table_info(owl_assignments)")
+            }:
+                db.execute(
+                    "ALTER TABLE owl_assignments ADD COLUMN work_scope TEXT NOT NULL DEFAULT 'text'"
+                )
             if any(
                 row["name"] == "max_active" and row["notnull"]
                 for row in db.execute("PRAGMA table_info(computer_capacity)")
@@ -226,6 +311,15 @@ class Store:
             task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
             if "failure" not in task_columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN failure TEXT")
+            if "conversation_visible" not in task_columns:
+                db.execute(
+                    "ALTER TABLE tasks ADD COLUMN conversation_visible "
+                    "INTEGER NOT NULL DEFAULT 1 CHECK(conversation_visible IN (0,1))"
+                )
+                db.execute(
+                    "UPDATE tasks SET conversation_visible=0 "
+                    "WHERE id IN (SELECT child_task_id FROM owl_assignments)"
+                )
             # How many times a turn a restart cut off was started again (Store.recover).
             if "restarts" not in task_columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0")
@@ -235,7 +329,7 @@ class Store:
             }:
                 db.execute("ALTER TABLE bot_action_reviews ADD COLUMN effect TEXT")
             bot_columns = {row["name"] for row in db.execute("PRAGMA table_info(bots)")}
-            for part in ("color", "background", "model"):
+            for part in ("color", "background", "model", "reasoning_effort"):
                 if part not in bot_columns:
                     db.execute(f"ALTER TABLE bots ADD COLUMN {part} TEXT")
             # When the person pinned the owl, and when they archived it; NULL: not now.
@@ -254,8 +348,32 @@ class Store:
                 db.execute("INSERT INTO object_storage_enabled VALUES(1) ON CONFLICT DO NOTHING")
             elif db.execute("SELECT 1 FROM object_storage_enabled").fetchone():
                 raise ObjectStorageError("This database requires its configured object storage.")
-            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if version < SCHEMA_VERSION:
+            with self.connect(write=True) as db:
+                if version < 56:
+                    self._publish_existing_assistant_handoffs(db)
+                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         path.chmod(0o600)
+
+    @staticmethod
+    def _publish_existing_assistant_handoffs(db) -> None:
+        """Show approved Assistant handoffs in the recipient's chat, including older replies."""
+        db.execute(
+            "UPDATE tasks SET conversation_visible=1 WHERE conversation_visible=0 AND id IN ("
+            "SELECT a.child_task_id FROM owl_assignments a "
+            "JOIN tasks source ON source.id=a.source_task_id "
+            "JOIN owl_assistants assistant ON assistant.bot_id=source.bot_id AND assistant.owner=source.owner "
+            "WHERE a.decision='approved' "
+            "AND NOT EXISTS(SELECT 1 FROM schedule_runs r WHERE r.task_id=a.child_task_id))"
+        )
+        db.execute(
+            "INSERT INTO messages(id,chat_id,task_id,role,content,created_at) "
+            "SELECT t.id,t.chat_id,t.id,'assistant',t.output,t.updated_at FROM tasks t "
+            "JOIN owl_assignments a ON a.child_task_id=t.id "
+            "WHERE t.conversation_visible=1 AND t.status='completed' AND t.output<>'' "
+            "AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.task_id=t.id AND m.role='assistant') "
+            "ON CONFLICT(id) DO NOTHING"
+        )
 
     @contextmanager
     def connect(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -322,6 +440,7 @@ class Store:
             or not (cls.executing(db, task) if background else task["status"] == "running")
             or task["config"].get("activation")
             or task["config"].get("intro")
+            or task["config"].get("assignment_id")
             or task["config"].get("check_back")
             or db.execute("SELECT 1 FROM schedule_runs WHERE task_id=?", (task_id,)).fetchone()
             or db.execute("SELECT 1 FROM task_waits WHERE task_id=?", (task_id,)).fetchone()
@@ -333,15 +452,25 @@ class Store:
         return task
 
     @staticmethod
-    def _bot(db: sqlite3.Connection, owner: str, bot_id: str) -> dict:
-        row = db.execute("SELECT * FROM bots WHERE id=? AND owner=?", (bot_id, owner)).fetchone()
-        if row is None:
-            raise NotFound("Bot not found.")
+    def _bot_view(row) -> dict:
         result = dict(row)
         result.pop("owner")
+        managed = result.pop("managed_assistant")
+        enabled = result.pop("assistant_enabled")
+        if managed:
+            result.update(
+                ASSISTANT_PROFILE, managed_assistant=True, assistant_enabled=bool(enabled)
+            )
         for key in ("memory_enabled", "files_enabled"):
             result[key] = bool(result[key])
         return result
+
+    @classmethod
+    def _bot(cls, db: sqlite3.Connection, owner: str, bot_id: str) -> dict:
+        row = db.execute(_BOT_SELECT + "WHERE b.id=? AND b.owner=?", (bot_id, owner)).fetchone()
+        if row is None:
+            raise NotFound("Bot not found.")
+        return cls._bot_view(row)
 
     @staticmethod
     def _task(db: sqlite3.Connection, owner: str, task_id: str) -> dict:
@@ -351,6 +480,7 @@ class Store:
         result = dict(row)
         result.pop("owner")
         result["config"] = json.loads(result["config"])
+        result.pop("conversation_visible")
         # Why a failed or interrupted turn stopped (failures.py); None for older rows.
         result["failure"] = json.loads(result["failure"]) if result.get("failure") else None
         if result["status"] == "waiting":
@@ -404,11 +534,17 @@ class Store:
             db, source["chat_id"], source["bot_id"]
         ):
             return source["chat_id"]
+        if self._is_thread(db, source["chat_id"]):
+            self._chat(db, owner, source["chat_id"])
+            return source["chat_id"]
         bot = self._bot(db, owner, source["bot_id"])
         return self._ensure_chat(db, owner, bot["id"], bot["name"])["id"]
 
     @staticmethod
     def _event(db: sqlite3.Connection, task_id: str, kind: str, data: dict) -> None:
+        if kind in DRAFT_SETTLED_BY:
+            # A withdrawal, or the turn's next state, settles a draft still being checked.
+            Store._settle_reply_drafts(db, task_id)
         db.execute(
             "INSERT INTO events(task_id,kind,data,created_at) VALUES(?,?,?,?)",
             (task_id, kind, encode(data), time.time()),
@@ -543,6 +679,8 @@ class Store:
                     result["step"] = data.get("name")
                     result["topic"] = data.get("topic")
                     result["file"] = data.get("file")
+                    if isinstance(data.get("app_action"), dict):
+                        result["app_action"] = data["app_action"]
                     if data.get("variant") in STEP_VARIANTS:
                         result["variant"] = data["variant"]
                 if result["host"] is None and data.get("host"):
@@ -681,10 +819,52 @@ class Store:
         with self.connect() as db:
             return self._bot(db, owner, bot_id)
 
+    @staticmethod
+    def _insert_bot(db, owner: str, data: BotInput, now: float) -> str:
+        bot_id = uid()
+        db.execute(
+            "INSERT INTO bots(id,owner,name,purpose,instructions,memory_enabled,"
+            "files_enabled,created_at,updated_at,color,background,model,reasoning_effort) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                bot_id,
+                owner,
+                data.name,
+                data.purpose,
+                data.instructions,
+                data.memory_enabled,
+                data.files_enabled,
+                now,
+                now,
+                data.color,
+                data.background,
+                data.model,
+                data.reasoning_effort,
+            ),
+        )
+        return bot_id
+
     def save_bot(
         self, owner: str, data: BotInput, bot_id: str | None = None, *, within=None
     ) -> dict:
         with self._joined(within) as db:
+            current = self._bot(db, owner, bot_id) if bot_id is not None else None
+            if current and current.get("managed_assistant"):
+                if any(
+                    field in data.model_fields_set and getattr(data, field) != value
+                    for field, value in ASSISTANT_PROFILE.items()
+                ):
+                    raise Conflict("Alysis manages this owl's name, purpose and instructions.")
+                data = data.model_copy(
+                    update={
+                        **ASSISTANT_PROFILE,
+                        **{
+                            field: current[field]
+                            for field in ("memory_enabled", "files_enabled")
+                            if field not in data.model_fields_set
+                        },
+                    }
+                )
             now = time.time()
             values = (
                 data.name,
@@ -693,7 +873,7 @@ class Store:
                 data.memory_enabled,
                 data.files_enabled,
             )
-            if bot_id is None:
+            if current is None:
                 request_id = getattr(data, "request_id", None)
                 # Only a fingerprint of the settings is kept: the owl itself holds the text.
                 setup_hash = hashlib.sha256(encode(values).encode()).hexdigest()
@@ -712,32 +892,35 @@ class Store:
                         return self._bot(db, owner, made["bot_id"])
                 # Archived owls count: they keep their chats, memories and files.
                 if (
-                    db.execute("SELECT count(*) FROM bots WHERE owner=?", (owner,)).fetchone()[0]
+                    db.execute(
+                        "SELECT count(*) FROM bots b LEFT JOIN owl_assistants a "
+                        "ON a.owner=b.owner AND a.bot_id=b.id WHERE b.owner=? AND a.bot_id IS NULL",
+                        (owner,),
+                    ).fetchone()[0]
                     >= MAX_OWLS
                 ):
                     raise LimitReached(
                         f"You can have up to {MAX_OWLS} owls, archived ones included. "
                         "Delete one to make room for a new one."
                     )
-                bot_id = uid()
-                db.execute(
-                    "INSERT INTO bots(id,owner,name,purpose,instructions,memory_enabled,"
-                    "files_enabled,created_at,updated_at,color,background,model) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (bot_id, owner, *values, now, now, data.color, data.background, data.model),
-                )
+                bot_id = self._insert_bot(db, owner, data, now)
                 if request_id:
                     db.execute(
                         "INSERT INTO bot_create_requests VALUES(?,?,?,?,?)",
                         (owner, request_id, bot_id, setup_hash, now),
                     )
             else:
-                current = self._bot(db, owner, bot_id)
                 # Its look, like its name, is only a label: it applies at once. A change that
                 # leaves a part out (an app from before looks) keeps the one the person picked.
                 # Its model applies the same way, from the next turn it starts: work already
                 # thinking keeps the model it started with.
-                for part in ("color", "background", "model"):
+                if (
+                    "model" in data.model_fields_set
+                    and data.model != current["model"]
+                    and "reasoning_effort" not in data.model_fields_set
+                ):
+                    db.execute("UPDATE bots SET reasoning_effort=NULL WHERE id=?", (bot_id,))
+                for part in ("color", "background", "model", "reasoning_effort"):
                     if part in data.model_fields_set:
                         db.execute(
                             f"UPDATE bots SET {part}=? WHERE id=?", (getattr(data, part), bot_id)
@@ -771,6 +954,26 @@ class Store:
                 )
             return self._bot(db, owner, bot_id)
 
+    @staticmethod
+    def _check_bot_deletion(db, bot_id: str) -> None:
+        if db.execute(
+            "SELECT 1 FROM tasks WHERE bot_id=? AND status IN ('queued','running','waiting','cancelling')",
+            (bot_id,),
+        ).fetchone():
+            raise Conflict("Stop this bot's work before deleting it.")
+        if db.execute(
+            "SELECT 1 FROM owl_assignments a JOIN tasks parent ON parent.id=a.source_task_id "
+            "JOIN tasks child ON child.id=a.child_task_id WHERE parent.bot_id=? "
+            "AND child.status IN ('queued','running','waiting','cancelling')",
+            (bot_id,),
+        ).fetchone():
+            raise Conflict("Stop this owl's active assignments before deleting it.")
+
+    def check_bot_deletion(self, owner: str, bot_id: str) -> None:
+        with self.connect() as db:
+            self._bot(db, owner, bot_id)
+            self._check_bot_deletion(db, bot_id)
+
     def delete_bot(self, owner: str, bot_id: str, *, check=None) -> None:
         """Remove a bot and what it holds from its owner's account.
 
@@ -792,17 +995,38 @@ class Store:
             self._bot(db, owner, bot_id)
             if check is not None:
                 check(db)
-            if db.execute(
-                "SELECT 1 FROM tasks WHERE bot_id=? AND status IN ('queued','running','waiting','cancelling')",
-                (bot_id,),
-            ).fetchone():
-                raise Conflict("Stop this bot's work before deleting it.")
+            self._check_bot_deletion(db, bot_id)
             for row in db.execute(
                 "SELECT record FROM computer_allocations WHERE bot_id=?", (bot_id,)
             ).fetchall():
                 if json.loads(row["record"]).get("state") != "deleted":
                     raise Conflict("Wait for this bot's computer to shut down, then delete it.")
+            assistant = self._assistant_record(db, owner)
+            if assistant and assistant["bot_id"] == bot_id:
+                self._disable_assistant(db, owner, assistant)
+                db.execute("DELETE FROM owl_assistants WHERE owner=?", (owner,))
+            elif self._is_coordinator(db, owner, bot_id):
+                self._change_coordinator(db, owner, None)
+            if assistant and assistant["previous_coordinator_id"] == bot_id:
+                db.execute(
+                    "UPDATE owl_assistants SET previous_coordinator_id=NULL WHERE owner=?", (owner,)
+                )
+            for routine in db.execute(
+                "SELECT s.* FROM schedules s JOIN owl_assignment_routines r ON r.schedule_id=s.id "
+                "JOIN owl_assignments a ON a.id=r.assignment_id "
+                "WHERE a.recipient_bot_id=? AND s.state='active'",
+                (bot_id,),
+            ).fetchall():
+                self._pause_schedule(
+                    db,
+                    dict(routine),
+                    "assignment_missing",
+                    time.time(),
+                )
             tasks = "SELECT id FROM tasks WHERE bot_id=?"
+            assigned_tasks = (
+                f"SELECT child_task_id FROM owl_assignments WHERE source_task_id IN ({tasks})"
+            )
             # Its own chats; a room it was made with keeps its chat (rooms.py).
             chats = f"SELECT id FROM chats WHERE bot_id=? AND id NOT IN ({self.ROOM_CHATS})"
             notes = "SELECT id FROM working_notes WHERE bot_id=?"
@@ -819,6 +1043,11 @@ class Store:
                 (f"DELETE FROM room_turns WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM chat_read_cursors WHERE chat_id IN ({chats})", 1),
                 (f"DELETE FROM events WHERE task_id IN ({tasks})", 1),
+                (f"DELETE FROM events WHERE task_id IN ({assigned_tasks})", 1),
+                (
+                    f"UPDATE tasks SET output='',error=NULL,failure=NULL WHERE id IN ({assigned_tasks})",
+                    1,
+                ),
                 (f"DELETE FROM task_tool_results WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM task_files WHERE task_id IN ({tasks})", 1),
                 (f"DELETE FROM queued_messages WHERE task_id IN ({tasks})", 1),
@@ -908,6 +1137,11 @@ class Store:
                     1,
                 ),
                 ("DELETE FROM peer_exchanges WHERE source_bot_id=?", 1),
+                (
+                    f"DELETE FROM owl_assignments WHERE source_task_id IN ({tasks}) "
+                    "OR recipient_bot_id=?",
+                    2,
+                ),
                 ("DELETE FROM bot_create_requests WHERE bot_id=?", 1),
             ):
                 db.execute(statement, (bot_id,) * count)
@@ -986,6 +1220,11 @@ class Store:
             "UPDATE bots SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL", (bot_id,)
         ).rowcount:
             return
+        db.execute(
+            "UPDATE app_event_watches SET cursor_at=?,next_poll=?,window_end=NULL,page_token='' "
+            "WHERE trigger_id IN (SELECT id FROM bot_triggers WHERE bot_id=? AND state='active')",
+            (now, now + 900, bot_id),
+        )
         for row in db.execute(
             "SELECT id FROM schedules WHERE bot_id=? AND state='active' AND next_run_at<=?",
             (bot_id, now),
@@ -1038,6 +1277,7 @@ class Store:
                     color=source["color"],
                     background=source["background"],
                     model=source["model"],
+                    reasoning_effort=source["reasoning_effort"],
                     request_id=data.request_id,
                 ),
                 within=db,
@@ -1086,9 +1326,38 @@ class Store:
                     self._memory_change(db, copy["id"], memory_id, "created", None, "active")
             return self._bot(db, owner, copy["id"])
 
-    def create_chat(self, owner: str, bot_id: str, title: str) -> dict:
+    def create_chat(
+        self, owner: str, bot_id: str, title: str, *, thread_request_id: str | None = None
+    ) -> dict:
         with self.connect(write=True) as db:
-            return self._ensure_chat(db, owner, bot_id, title)
+            default = self._ensure_chat(
+                db, owner, bot_id, title if not thread_request_id else "New conversation"
+            )
+            if not thread_request_id:
+                return default
+            existing = db.execute(
+                "SELECT chat_id FROM owl_chat_threads WHERE bot_id=? AND request_id=?",
+                (bot_id, thread_request_id),
+            ).fetchone()
+            if existing:
+                return self._chat(db, owner, existing[0])
+            chat_id = uid()
+            db.execute("INSERT INTO chats VALUES(?,?,?,?)", (chat_id, bot_id, title, time.time()))
+            db.execute(
+                "INSERT INTO owl_chat_threads VALUES(?,?,?)", (chat_id, bot_id, thread_request_id)
+            )
+            return self._chat(db, owner, chat_id)
+
+    @staticmethod
+    def _is_thread(db, chat_id: str) -> bool:
+        return (
+            db.execute("SELECT 1 FROM owl_chat_threads WHERE chat_id=?", (chat_id,)).fetchone()
+            is not None
+        )
+
+    def separate_thread(self, chat_id: str) -> bool:
+        with self.connect() as db:
+            return self._is_thread(db, chat_id)
 
     @classmethod
     def _ensure_chat(cls, db: sqlite3.Connection, owner: str, bot_id: str, title: str) -> dict:
@@ -1107,6 +1376,7 @@ class Store:
         """The first chat of the owl's own conversation (never a room's), or None."""
         return db.execute(
             f"SELECT * FROM chats WHERE bot_id=? AND id NOT IN ({cls.ROOM_CHATS}) "
+            "AND id NOT IN (SELECT chat_id FROM owl_chat_threads) "
             "ORDER BY created_at,id LIMIT 1",
             (bot_id,),
         ).fetchone()
@@ -1117,7 +1387,9 @@ class Store:
         chat = cls._chat(db, owner, chat_id)
         if cls._room_row(db, chat_id) is not None:
             return chat, ChatScope(chat_id, room=True)
-        return chat, ChatScope(chat["bot_id"])
+        if cls._is_thread(db, chat_id):
+            return chat, ChatScope(chat_id, thread_bot=chat["bot_id"])
+        return chat, ChatScope(chat["bot_id"], default_chat=True)
 
     @classmethod
     def _chat_activities(cls, db: sqlite3.Connection, bot_id: str) -> list[dict]:
@@ -1125,7 +1397,15 @@ class Store:
         chat = cls._own_chat(db, bot_id)
         if chat is None:
             return []
-        return [cls._activity(db, dict(chat), ChatScope(bot_id))]
+        activities = [cls._activity(db, dict(chat), ChatScope(bot_id, default_chat=True))]
+        for thread in db.execute(
+            "SELECT c.* FROM chats c JOIN owl_chat_threads x ON x.chat_id=c.id WHERE x.bot_id=? ORDER BY c.created_at DESC,c.id",
+            (bot_id,),
+        ):
+            activities.append(
+                cls._activity(db, dict(thread), ChatScope(thread["id"], thread_bot=bot_id))
+            )
+        return activities
 
     @staticmethod
     def _activity(db, chat: dict, scope: ChatScope) -> dict:
@@ -1144,14 +1424,16 @@ class Store:
                FROM (SELECT t.chat_id,
                             (SELECT max(e.seq) FROM events e WHERE e.task_id=t.id) AS latest,
                             (SELECT max(e.seq) FROM events e WHERE e.task_id=t.id AND e.kind IN
-                              ('completed','failed','cancelled','interrupted')) AS finished
-                     FROM tasks t WHERE {scope.tasks} AND {not_withdrawn("t")}) x
+                              ('completed','failed','cancelled','interrupted','assignment_review')) AS finished
+                     FROM tasks t WHERE {scope.tasks} AND {not_withdrawn("t")} AND t.conversation_visible=1) x
                LEFT JOIN chat_read_cursors r ON r.chat_id=x.chat_id""",
             (scope.value,),
         ).fetchone()
         item = {**chat, **dict(row)}
         latest = db.execute(
             """SELECT e.seq,e.created_at,t.id AS task_id,t.chat_id,t.status,t.bot_id,
+                      EXISTS(SELECT 1 FROM owl_assignments a WHERE a.child_task_id=t.id)
+                        AS assistant_handoff,
                       substr(CASE WHEN t.status='completed' THEN t.output ELSE t.message END,1,240) AS preview
                FROM events e JOIN tasks t ON t.id=e.task_id WHERE e.seq=?""",
             (item["latest_seq"],),
@@ -1168,7 +1450,16 @@ class Store:
         # In a room the last line says which owl it is from; an owl's own chat is all its own.
         if latest and not scope.room:
             latest.pop("bot_id")
-        item["latest"] = {**latest, "title": item["title"]} if latest else None
+        handoff = latest.pop("assistant_handoff") if latest else False
+        item["latest"] = (
+            {
+                **latest,
+                "title": item["title"],
+                **({"assistant_handoff": True} if handoff else {}),
+            }
+            if latest
+            else None
+        )
         item["unread"] = bool(item["unread"])
         return item
 
@@ -1182,7 +1473,7 @@ class Store:
                 f"""SELECT 1 FROM tasks t JOIN events e ON e.task_id=t.id
                 LEFT JOIN chat_read_cursors r ON r.chat_id=t.chat_id
                 WHERE t.chat_id=? AND {not_withdrawn("t")}
-                AND e.kind IN ('completed','failed','cancelled','interrupted')
+                AND e.kind IN ('completed','failed','cancelled','interrupted','assignment_review')
                 AND e.seq>coalesce(r.event_seq,0) LIMIT 1""",
                 (chat_id,),
             ).fetchone()
@@ -1209,8 +1500,8 @@ class Store:
             _chat, scope = self._scope(db, owner, chat_id)
             observed = db.execute(
                 f"""SELECT 1 FROM events e JOIN tasks t ON t.id=e.task_id
-                   WHERE e.seq=? AND {scope.tasks} AND e.kind IN
-                     ('completed','failed','cancelled','interrupted')""",
+                   WHERE e.seq=? AND {scope.tasks} AND t.conversation_visible=1 AND e.kind IN
+                     ('completed','failed','cancelled','interrupted','assignment_review')""",
                 (activity_seq, scope.value),
             ).fetchone()
             if not observed:
@@ -1229,7 +1520,8 @@ class Store:
     def conversation(self, owner: str, chat_id: str) -> dict:
         with self.connect() as db:
             chat, scope = self._scope(db, owner, chat_id)
-            chat = chat if scope.room else dict(self._own_chat(db, chat["bot_id"]))
+            if scope.default_chat:
+                chat = dict(self._own_chat(db, chat["bot_id"]))
             chat["messages"] = [
                 dict(row)
                 for row in db.execute(
@@ -1243,7 +1535,8 @@ class Store:
             chat["tasks"] = [
                 self._task(db, owner, row[0])
                 for row in db.execute(
-                    f"SELECT t.id FROM tasks t WHERE {scope.tasks} ORDER BY t.created_at,t.id",
+                    f"SELECT t.id FROM tasks t WHERE {scope.tasks} AND t.conversation_visible=1 "
+                    "ORDER BY t.created_at,t.id",
                     (scope.value,),
                 )
             ]
@@ -1311,17 +1604,44 @@ class Store:
     @classmethod
     def _message_file_lists(cls, db, scope: ChatScope, messages: list[dict], *, only=None) -> None:
         attached = cls._message_files(db, scope, only=only)
+        selections = {}
+        if attached and not scope.room:
+            within = "" if only is None else f" AND t.id IN ({','.join('?' * len(only))})"
+            for row in db.execute(
+                f"SELECT t.id,t.config FROM tasks t WHERE {scope.tasks}{within} AND t.config LIKE ?",
+                (scope.value, *(only or ()), '%"interactive_target":{%'),
+            ):
+                target = json.loads(row["config"]).get("interactive_target")
+                if target and any(
+                    file["id"] == target["file_id"] for file in attached.get(row["id"], ())
+                ):
+                    label = " ".join((target.get("element") or {}).get("label", "").split())
+                    selections[row["id"]] = {
+                        "file_id": target["file_id"],
+                        "revision": target["revision"],
+                        "label": "" if re.search(r"<[/!A-Za-z]", label) else label[:240],
+                    }
+                    if marks := target.get("marks"):
+                        selections[row["id"]]["labels"] = [
+                            ""
+                            if re.search(r"<[/!A-Za-z]", mark["element"]["label"])
+                            else mark["element"]["label"][:240]
+                            for mark in marks
+                        ]
         for message in messages:
             if message["role"] == "user":
                 message["files"] = attached.get(message["task_id"], [])
+                if selection := selections.get(message["task_id"]):
+                    message["interactive_selection"] = selection
 
     @classmethod
     def _decorate_scope(cls, db, scope: ChatScope, tasks: list[dict], *, only=None) -> None:
         """What a conversation shows with each of its tasks (_decorate_tasks). A room's turns
         belong to several owls, each read with its own owl, and carry the cards that wait for
         the person there (rooms.py)."""
+        tasks[:] = [public_task(task) for task in tasks]
         if not scope.room:
-            cls._decorate_tasks(db, scope.value, tasks, only=only)
+            cls._decorate_tasks(db, scope.thread_bot or scope.value, tasks, only=only)
             return
         by_owl: dict[str, list[dict]] = {}
         for task in tasks:
@@ -1358,19 +1678,38 @@ class Store:
             for row in db.execute(
                 "SELECT f.source_task_id,count(*) AS count FROM files f "
                 f"JOIN tasks t ON t.id=f.source_task_id WHERE f.bot_id=? AND {scope} "
+                "AND NOT EXISTS (SELECT 1 FROM owl_withdrawn_results w WHERE w.file_id=f.id) "
                 "GROUP BY f.source_task_id",
                 (bot_id, *values),
             )
         }
-        # The short updates a bot sent while working stay part of that turn's history.
+        # A collapsed record can be offered without loading every turn's event payloads.
+        # The (task_id, kind, seq) index also covers conversations from earlier releases.
+        worked = {
+            row["id"]
+            for row in db.execute(
+                f"SELECT t.id FROM tasks t WHERE {scope} AND EXISTS "
+                "(SELECT 1 FROM events e WHERE e.task_id=t.id "
+                "AND e.kind IN ('tool_completed','tool_failed'))",
+                values,
+            )
+        }
+        # Progress and proposals stay with the turn that produced them.
         progress_notes: dict[str, list[str]] = {}
+        owl_drafts: dict[str, dict] = {}
+        screen_requests: dict[str, dict] = {}
         for row in db.execute(
-            "SELECT e.task_id,e.data FROM events e JOIN tasks t ON t.id=e.task_id "
-            f"WHERE {scope} AND e.kind='progress_note' ORDER BY e.seq",
+            "SELECT e.task_id,e.kind,e.data FROM events e JOIN tasks t ON t.id=e.task_id "
+            f"WHERE {scope} AND (e.kind='progress_note' "
+            "OR (e.kind IN ('assistant_owl_draft','assistant_screen_request') AND t.status='completed')) ORDER BY e.seq",
             values,
         ):
-            text = json.loads(row["data"]).get("text")
-            if text:
+            data = json.loads(row["data"])
+            if row["kind"] == "assistant_owl_draft":
+                owl_drafts[row["task_id"]] = data
+            elif row["kind"] == "assistant_screen_request":
+                screen_requests[row["task_id"]] = data
+            elif text := data.get("text"):
                 progress_notes.setdefault(row["task_id"], []).append(text)
         # A routine's run that checked and found nothing new, posting no reply: when it did.
         nothing_new = {
@@ -1384,13 +1723,78 @@ class Store:
         for task in tasks:
             task["coding_job_id"] = jobs.get(task["id"])
             task["file_count"] = file_counts.get(task["id"], 0)
+            task["has_tool_steps"] = task["id"] in worked
             notes = progress_notes.get(task["id"], [])
             task["progress_notes"] = notes
             # Apps released before progress_notes show one line: the latest.
             task["progress_note"] = notes[-1] if notes else None
+            if task["id"] in owl_drafts:
+                task["assistant_owl_draft"] = owl_drafts[task["id"]]
+            if task["id"] in screen_requests:
+                task["assistant_screen_request"] = screen_requests[task["id"]]
             # Only such a run carries it, so other turns read as before.
             if task["id"] in nothing_new:
                 task["nothing_new_at"] = nothing_new[task["id"]]
+        if any(task["config"].get("assignment_id") for task in tasks):
+            handoffs = {
+                row["task_id"]: {
+                    "brief": row["brief"],
+                    "expected_result": row["expected_result"],
+                    "verification": json.loads(row["verification"])
+                    if row["verification"]
+                    else None,
+                }
+                for row in db.execute(
+                    "SELECT t.id AS task_id,a.brief,a.expected_result,a.verification "
+                    "FROM owl_assignments a JOIN tasks t ON t.id=a.child_task_id "
+                    f"WHERE {scope} AND t.conversation_visible=1",
+                    values,
+                )
+            }
+            for task in tasks:
+                if task["id"] in handoffs:
+                    task["assistant_handoff"] = handoffs[task["id"]]
+        # A proposal belongs to its originating turn even after another message arrives.
+        # The unique source_task_id allows at most one pending receipt on each turn.
+        pending = {
+            row["source_task_id"]: {"id": row["id"], "recipient_name": row["recipient_name"]}
+            for row in db.execute(
+                "SELECT a.source_task_id,a.id,a.recipient_name FROM owl_assignments a "
+                "JOIN tasks t ON t.id=a.source_task_id "
+                "JOIN owl_coordinators c ON c.owner=t.owner AND c.bot_id=t.bot_id "
+                f"WHERE {scope} AND t.conversation_visible=1 AND t.status='completed' "
+                "AND a.decision='proposed'",
+                values,
+            )
+        }
+        for task in tasks:
+            receipt = pending.get(task["id"])
+            task["pending_assignments"] = [receipt] if receipt else []
+        # A withheld workbook has no coordinator return task. Its original chat turn can
+        # show the actual finding without publishing the specialist's draft.
+        by_id = {task["id"]: task for task in tasks}
+        for row in db.execute(
+            "SELECT a.id,a.source_task_id,a.recipient_name,a.recipient_bot_id,a.child_task_id,a.verification "
+            "FROM owl_assignments a JOIN tasks t ON t.id=a.source_task_id "
+            "JOIN tasks child ON child.id=a.child_task_id "
+            "JOIN owl_assignment_files af ON af.assignment_id=a.id "
+            f"WHERE {scope} AND t.conversation_visible=1 AND child.owner=t.owner "
+            "AND child.status='completed' AND a.verification IS NOT NULL "
+            "AND (af.inputs<>'[]' OR af.checkpoint_ids<>'[]')",
+            values,
+        ):
+            verdict = json.loads(row["verification"])
+            if verdict["status"] != "met" and (parent := by_id.get(row["source_task_id"])):
+                parent["assignment_reviews"] = [
+                    {
+                        **{
+                            key: row[key]
+                            for key in ("id", "recipient_name", "recipient_bot_id", "child_task_id")
+                        },
+                        "status": verdict["status"],
+                        "detail": verdict.get("detail"),
+                    }
+                ]
         decided = cls._decided_actions(db, bot_id, only=only)
         from .proposals import setup_cards
         from .routine_suggestions import suggestion_cards
@@ -1541,7 +1945,8 @@ class Store:
         ids = [
             row[0]
             for row in db.execute(
-                f"SELECT t.id FROM tasks t WHERE {scope.tasks} AND ({' OR '.join(clauses)}) "
+                f"SELECT t.id FROM tasks t WHERE {scope.tasks} AND t.conversation_visible=1 "
+                f"AND ({' OR '.join(clauses)}) "
                 "ORDER BY t.created_at,t.id",
                 (scope.value, *values),
             )
@@ -1580,7 +1985,7 @@ class Store:
         """
         with self.connect() as db:
             chat, scope = self._scope(db, owner, chat_id)
-            first = chat if scope.room else dict(self._own_chat(db, chat["bot_id"]))
+            first = dict(self._own_chat(db, chat["bot_id"])) if scope.default_chat else chat
             result = {key: first[key] for key in ("id", "bot_id", "title", "created_at")}
             activity = self._activity(db, result, scope)
             result.update(
@@ -1648,12 +2053,16 @@ class Store:
             )
             prints = {task["id"]: self._fingerprint(task) for task in tasks}
             shown = {message["task_id"] for message in window}
-            # A task the client had that left the page keeps its last state there; once it is
-            # neither working nor new it doesn't change again, so the version drops it.
+            # Keep already-seen pending cards in the polling version after they scroll off
+            # this page, so the decision removes the correct card. Older pages read their
+            # own receipts afresh. Bound the extra fingerprint list like the assignment inbox.
+            pending_ids = [task["id"] for task in tasks if task["pending_assignments"]]
+            tracked_pending = set(pending_ids[-ASSIGNMENT_PAGE_SIZE:])
             current = [
                 task
                 for task in tasks
                 if task["id"] in shown
+                or task["id"] in tracked_pending
                 or task["status"] in ACTIVE
                 or not earlier
                 or task["created_at"] >= latest[0]["created_at"]
@@ -1672,19 +2081,14 @@ class Store:
                 )
             return self._page(db, scope, result, new, changed, earlier=None, continues=True)
 
-    @staticmethod
-    def _in_scope(scope: ChatScope, task: dict, room: bool) -> bool:
-        """Whether the task is a turn of this conversation (``room``: it was taken in a room)."""
-        if scope.room:
-            return task["chat_id"] == scope.value
-        return task["bot_id"] == scope.value and not room
-
     def _reach_back(self, db, owner, scope: ChatScope, messages, query, before):
         """Extend a page back to the first message of ``query.through_task``."""
         if query.through_task is None:
             return messages
         task = self._task(db, owner, query.through_task)
-        if not self._in_scope(scope, task, self._room_row(db, task["chat_id"]) is not None):
+        if not db.execute(
+            f"SELECT 1 FROM tasks t WHERE t.id=? AND {scope.tasks}", (task["id"], scope.value)
+        ).fetchone():
             raise NotFound("Task not found.")
         start = db.execute(
             "SELECT m.created_at,m.rowid AS position FROM messages m WHERE m.task_id=? "
@@ -1751,6 +2155,8 @@ class Store:
             columns = """m.rowid AS position,m.id,m.chat_id,m.task_id,m.role,
                           substr(m.content,1,700) AS preview,length(m.content) AS characters,
                           m.created_at,c.title AS conversation_title,t.status AS task_status"""
+            if excerpts:
+                columns += ",EXISTS(SELECT 1 FROM owl_chat_threads x WHERE x.chat_id=c.id) AS separate_thread"
             # The owl's own conversation: rooms keep their messages to themselves (rooms.py).
             source = f"""FROM messages m JOIN chats c ON c.id=m.chat_id JOIN tasks t ON t.id=m.task_id
                    WHERE {ChatScope(bot_id).chats} AND (CAST(? AS BIGINT) IS NULL OR m.rowid<?)"""
@@ -1785,10 +2191,14 @@ class Store:
                         if len(rows) > data.limit:
                             break
             page = []
+            default_chat = self._own_chat(db, bot_id) if excerpts else None
             for row in rows[: data.limit]:
                 item = dict(row)
                 content = item.pop("content", None)
                 if excerpts:
+                    separate_thread = item.pop("separate_thread")
+                    if default_chat and not separate_thread:
+                        item["chat_id"] = default_chat["id"]
                     if content is None:
                         content = db.execute(
                             "SELECT content FROM messages WHERE id=?", (item["id"],)
@@ -1995,7 +2405,9 @@ class Store:
                 "SELECT t.id,t.bot_id,t.chat_id,t.id AS task_id,t.status,t.message FROM tasks t "
                 "JOIN bots b ON b.id=t.bot_id WHERE b.owner=? "
                 "AND t.status IN ('failed','interrupted') "
+                "AND t.conversation_visible=1 "
                 "AND NOT EXISTS(SELECT 1 FROM tasks n WHERE n.owner=t.owner AND "
+                "n.conversation_visible=1 AND "
                 f"((t.chat_id IN ({rooms_sql}) AND n.chat_id=t.chat_id) OR "
                 f"(t.chat_id NOT IN ({rooms_sql}) AND n.bot_id=t.bot_id "
                 f"AND n.chat_id NOT IN ({rooms_sql}))) AND "
@@ -2009,11 +2421,7 @@ class Store:
                     "ORDER BY seq DESC LIMIT 1",
                     (row["id"], row["status"]),
                 ).fetchone()
-                scope = (
-                    ChatScope(row["chat_id"], room=True)
-                    if room_of(row["id"])
-                    else ChatScope(row["bot_id"])
-                )
+                _, scope = self._scope(db, owner, row["chat_id"])
                 read = db.execute(
                     "SELECT coalesce(max(r.event_seq),0) FROM chat_read_cursors r "
                     f"JOIN chats c ON c.id=r.chat_id WHERE {scope.chats}",
@@ -2103,11 +2511,10 @@ class Store:
         bot = self._bot(db, owner, bot_id)
         if source_task_id:
             task = self._task(db, owner, source_task_id)
-            if (
-                task["bot_id"] != bot_id
-                or not self.executing(db, task)
-                or not bot["memory_enabled"]
-            ):
+            notes_enabled = (
+                bot["assistant_enabled"] if bot.get("managed_assistant") else bot["memory_enabled"]
+            )
+            if task["bot_id"] != bot_id or not self.executing(db, task) or not notes_enabled:
                 raise Conflict("This task cannot update working notes for this bot.")
 
     def _save_note(self, db, bot_id, data, *, note_id=None, source_task_id=None):
@@ -2278,6 +2685,8 @@ class Store:
         """
         with self.connect(write=True) as db:
             bot = self._bot(db, owner, bot_id)
+            if bot.get("managed_assistant"):
+                return None
             previous = db.execute(
                 "SELECT id,bot_id FROM tasks WHERE owner=? AND request_id=?",
                 (owner, data.request_id),
@@ -2318,9 +2727,1235 @@ class Store:
         from .queued_messages import record
 
         with self.connect(write=True) as db:
-            task = self._enqueue(db, owner, chat_id, data)
+            task = self._enqueue(db, owner, chat_id, data, require_active_assistant=True)
             record(db, task["id"], data.message, task["created_at"])
             return task
+
+    @classmethod
+    def _assistant_state(cls, db, owner: str) -> dict:
+        row = db.execute(_BOT_SELECT + "WHERE a.owner=?", (owner,)).fetchone()
+        bot = cls._bot_view(row) if row else None
+        return {"enabled": bool(bot and bot["assistant_enabled"]), "bot": bot}
+
+    @staticmethod
+    def _assistant_record(db, owner: str):
+        return db.execute(
+            "SELECT bot_id,previous_coordinator_id FROM owl_assistants WHERE owner=?", (owner,)
+        ).fetchone()
+
+    def assistant(self, owner: str) -> dict:
+        with self.connect() as db:
+            return self._assistant_state(db, owner)
+
+    def set_assistant(self, owner: str, enabled: bool) -> dict:
+        with self.connect(write=True) as db:
+            assistant = self._assistant_record(db, owner)
+            if enabled:
+                previous_id = self._coordinator(db, owner)
+                if assistant is None:
+                    bot_id = self._insert_bot(
+                        db,
+                        owner,
+                        BotInput(**ASSISTANT_PROFILE, memory_enabled=False, files_enabled=False),
+                        time.time(),
+                    )
+                    db.execute(
+                        "INSERT INTO owl_assistants(owner,bot_id,previous_coordinator_id) VALUES(?,?,?)",
+                        (owner, bot_id, previous_id),
+                    )
+                else:
+                    bot_id = assistant["bot_id"]
+                    if previous_id != bot_id:
+                        db.execute(
+                            "UPDATE owl_assistants SET previous_coordinator_id=? WHERE owner=?",
+                            (previous_id, owner),
+                        )
+                self._change_coordinator(db, owner, bot_id)
+            elif assistant is not None:
+                self._disable_assistant(db, owner, assistant)
+            return self._assistant_state(db, owner)
+
+    def _disable_assistant(self, db, owner: str, assistant) -> None:
+        if self._is_coordinator(db, owner, assistant["bot_id"]):
+            previous_id = assistant["previous_coordinator_id"]
+            if (
+                previous_id
+                and not db.execute(
+                    "SELECT 1 FROM bots WHERE id=? AND owner=?", (previous_id, owner)
+                ).fetchone()
+            ):
+                previous_id = None
+            self._change_coordinator(db, owner, previous_id)
+            db.execute(
+                "UPDATE owl_assistants SET previous_coordinator_id=NULL WHERE owner=?", (owner,)
+            )
+
+    @staticmethod
+    def _coordinator(db, owner: str) -> str | None:
+        row = db.execute("SELECT bot_id FROM owl_coordinators WHERE owner=?", (owner,)).fetchone()
+        return row["bot_id"] if row else None
+
+    @classmethod
+    def _is_coordinator(cls, db, owner: str, bot_id: str) -> bool:
+        return cls._coordinator(db, owner) == bot_id
+
+    def is_coordinator(self, owner: str, bot_id: str) -> bool:
+        with self.connect() as db:
+            return self._is_coordinator(db, owner, bot_id)
+
+    def set_coordinator(self, owner: str, bot_id: str, enabled: bool) -> dict:
+        with self.connect(write=True) as db:
+            bot = self._bot(db, owner, bot_id)
+            if bot.get("managed_assistant"):
+                raise Conflict("Use Assist to change whether Alysis Assistant coordinates work.")
+            current_id = self._coordinator(db, owner)
+            assistant = self._assistant_record(db, owner)
+            if enabled and assistant and current_id == assistant["bot_id"]:
+                raise Conflict("Turn off Assist before choosing another coordinator.")
+            if enabled or current_id == bot_id:
+                self._change_coordinator(db, owner, bot_id if enabled else None)
+            return {"coordinator": enabled}
+
+    def _change_coordinator(self, db, owner: str, bot_id: str | None) -> None:
+        previous_id = self._coordinator(db, owner)
+        if previous_id == bot_id:
+            return
+        if bot_id is None:
+            db.execute("DELETE FROM owl_coordinators WHERE owner=?", (owner,))
+        else:
+            db.execute(
+                "INSERT INTO owl_coordinators(owner,bot_id) VALUES(?,?) "
+                "ON CONFLICT(owner) DO UPDATE SET bot_id=excluded.bot_id",
+                (owner, bot_id),
+            )
+        if previous_id:
+            db.execute(
+                "UPDATE owl_assignments SET decision='cancelled' WHERE decision='proposed' "
+                "AND source_task_id IN (SELECT id FROM tasks WHERE owner=? AND bot_id=?)",
+                (owner, previous_id),
+            )
+            for routine in db.execute(
+                "SELECT s.* FROM schedules s JOIN owl_assignment_routines r ON r.schedule_id=s.id "
+                "WHERE s.bot_id=? AND s.state='active'",
+                (previous_id,),
+            ).fetchall():
+                self._pause_schedule(db, dict(routine), "assignment_coordinator", time.time())
+
+    @staticmethod
+    def _assignment_rows(
+        db,
+        owner: str,
+        bot_id: str,
+        *,
+        assignment_id: str | None = None,
+        before: tuple[float, str] | None = None,
+    ):
+        scope, values = "", (owner, bot_id)
+        if assignment_id is not None:
+            scope, values = "AND a.id=?", (*values, assignment_id)
+        elif before is not None:
+            scope, values = "AND (a.created_at,a.id)<(?,?)", (*values, *before)
+        return db.execute(
+            "SELECT a.*,parent.status AS parent_status,parent.config AS parent_config,"
+            "af.assignment_id AS manifest_id,af.proposed AS proposed_files,af.inputs AS shared_files,"
+            "af.outputs AS returned_files,af.recipient_artifact_id,"
+            "child.status AS child_status,"
+            "child.output AS result,child.config AS child_config,"
+            "(SELECT e.data FROM events e WHERE e.task_id=a.source_task_id "
+            "AND e.kind='assignment_access' ORDER BY e.seq DESC LIMIT 1) AS proposed_access,"
+            "(SELECT e.data FROM events e WHERE e.task_id=a.source_task_id "
+            "AND e.kind='assignment_repeats' ORDER BY e.seq DESC LIMIT 1) AS repeats,"
+            "(SELECT e.data FROM events e WHERE e.task_id=a.child_task_id "
+            "AND e.kind='assignment_step' ORDER BY e.seq DESC LIMIT 1) AS current_step,"
+            "(SELECT f.id FROM files f WHERE f.source_task_id=a.child_task_id "
+            "AND f.bot_id=a.recipient_bot_id ORDER BY f.created_at,f.id LIMIT 1) AS artifact_id "
+            "FROM owl_assignments a JOIN tasks parent ON parent.id=a.source_task_id "
+            "LEFT JOIN owl_assignment_files af ON af.assignment_id=a.id "
+            "LEFT JOIN tasks child ON child.id=a.child_task_id "
+            f"WHERE parent.owner=? AND parent.bot_id=? {scope} "
+            "ORDER BY a.created_at DESC,a.id DESC LIMIT ?",
+            (*values, ASSIGNMENT_PAGE_SIZE + 1),
+        )
+
+    @staticmethod
+    def _assignment_item(row) -> dict:
+        status = row["decision"]
+        parent_config = json.loads(row["parent_config"])
+        routine = parent_config.get("assignment_routine")
+        if row["child_task_id"]:
+            status = row["child_status"]
+        elif status == "proposed" and row["parent_status"] in (
+            "failed",
+            "cancelled",
+            "interrupted",
+        ):
+            status = "cancelled"
+        returned = json.loads(row["returned_files"] or "[]") if status == "completed" else []
+        if row["decision"] == "approved":
+            inputs = [
+                {
+                    **f,
+                    "id": f["source_file_id"],
+                    "name": f["source_name"],
+                    "revision": f["source_revision"],
+                }
+                for f in json.loads(row["shared_files"] or "[]")
+            ]
+        else:
+            inputs = json.loads(row["proposed_files"] or "[]")
+        # Old assignments kept a single child-side artifact. New receipts identify only returned results.
+        artifact = (
+            (returned[0]["source_file_id"] if returned else row["recipient_artifact_id"])
+            if row["manifest_id"]
+            else row["artifact_id"]
+        )
+        return {
+            **{
+                key: row[key]
+                for key in (
+                    "id",
+                    "source_task_id",
+                    "recipient_bot_id",
+                    "recipient_name",
+                    "brief",
+                    "expected_result",
+                    "child_task_id",
+                )
+            },
+            "status": status,
+            "ready": status == "proposed" and row["parent_status"] == "completed",
+            "result": row["result"] or None,
+            **({"work_scope": row["work_scope"]} if row["work_scope"] != "text" else {}),
+            **({"artifact_id": artifact} if status == "completed" and artifact else {}),
+            **({"input_files": inputs} if inputs else {}),
+            **({"returned_files": returned} if returned else {}),
+            "verification": json.loads(row["verification"]) if row["verification"] else None,
+            **({"from_assist_offer": True} if parent_config.get("approved_owl_setup") else {}),
+            # The earlier finished assignment this one repeats, as the coordinator proposed it.
+            **({"repeats": json.loads(row["repeats"])["assignment_id"]} if row["repeats"] else {}),
+            # A computer task: what its card lets the owl use, and the numbered step it is on.
+            **(
+                {
+                    "access": json.loads(row["proposed_access"])
+                    if row["proposed_access"]
+                    else json.loads(row["child_config"] or "{}").get("assignment_access")
+                }
+                if row["work_scope"] == "computer"
+                else {}
+            ),
+            **(
+                {"step": json.loads(row["current_step"])["step"]}
+                if row["current_step"] and status in ("queued", "running", "waiting")
+                else {}
+            ),
+            **(
+                {"source_task_id": routine["source_task_id"], "routine_id": routine["schedule_id"]}
+                if routine
+                else {}
+            ),
+        }
+
+    def list_assignments(self, owner: str, bot_id: str, *, before: str | None = None) -> dict:
+        with self.connect() as db:
+            self._bot(db, owner, bot_id)
+            cursor = None
+            if before is not None:
+                row = db.execute(
+                    "SELECT a.created_at,a.id FROM owl_assignments a "
+                    "JOIN tasks parent ON parent.id=a.source_task_id "
+                    "WHERE parent.owner=? AND parent.bot_id=? AND a.id=?",
+                    (owner, bot_id, before),
+                ).fetchone()
+                if row is None:
+                    raise NotFound("Assignment page not found.")
+                cursor = (row["created_at"], row["id"])
+            items, encoded_bytes, next_before = [], 0, None
+            for row in self._assignment_rows(db, owner, bot_id, before=cursor):
+                item = self._assignment_item(row)
+                encoded_bytes += len(encode(item).encode("utf-8")) + 1
+                if items and (
+                    len(items) == ASSIGNMENT_PAGE_SIZE or encoded_bytes > ASSIGNMENT_PAGE_BYTES
+                ):
+                    next_before = items[-1]["id"]
+                    break
+                items.append(item)
+            coordinator = db.execute(
+                "SELECT c.bot_id, a.bot_id IS NOT NULL AS assistant_coordinator "
+                "FROM owl_coordinators c LEFT JOIN owl_assistants a "
+                "ON a.owner=c.owner AND a.bot_id=c.bot_id WHERE c.owner=?",
+                (owner,),
+            ).fetchone()
+            return {
+                "coordinator": bool(coordinator and coordinator["bot_id"] == bot_id),
+                "items": items,
+                "next_before": next_before,
+                **(
+                    {"assistant_coordinator": True}
+                    if coordinator and coordinator["assistant_coordinator"]
+                    else {}
+                ),
+            }
+
+    def read_assignment(self, owner: str, bot_id: str, assignment_id: str) -> dict:
+        with self.connect() as db:
+            row = self._assignment_rows(db, owner, bot_id, assignment_id=assignment_id).fetchone()
+            if row is None:
+                raise NotFound("Assignment not found.")
+            return self._assignment_item(row)
+
+    def assignment_proposal_for_task(self, owner: str, source_task_id: str) -> dict | None:
+        """The pending card on this specific coordinator turn, including before its reply lands."""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT a.id,a.recipient_name,a.work_scope,a.decision,t.status AS parent_status "
+                "FROM owl_assignments a JOIN tasks t ON t.id=a.source_task_id "
+                "JOIN owl_coordinators c ON c.owner=t.owner AND c.bot_id=t.bot_id "
+                "WHERE t.owner=? AND t.id=? AND t.conversation_visible=1 "
+                "AND t.status IN ('queued','running','waiting','completed') "
+                "AND a.decision='proposed' AND a.child_task_id IS NULL",
+                (owner, source_task_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "recipient_name": row["recipient_name"],
+            "work_scope": row["work_scope"],
+            "status": row["decision"],
+            "approval_availability": "ready"
+            if row["parent_status"] == "completed"
+            else "when_reply_completes",
+        }
+
+    def schedule_assignment(
+        self, owner: str, bot_id: str, assignment_id: str, data: AssignmentScheduleInput
+    ) -> dict:
+        """Create a paused routine from a completed, directly approved assignment."""
+        with self.connect(write=True) as db:
+            source = self._assignment_rows(
+                db, owner, bot_id, assignment_id=assignment_id
+            ).fetchone()
+            if source is None:
+                raise NotFound("Assignment not found.")
+            item = self._assignment_item(source)
+            if not self._is_coordinator(db, owner, bot_id):
+                raise Conflict("Choose this owl as coordinator before scheduling its assignments.")
+            if item["status"] != "completed" or item["result"] is None or item.get("routine_id"):
+                raise Conflict("Choose an original assignment with a completed result.")
+            recipient = self._bot(db, owner, item["recipient_bot_id"])
+            access = item.get("access")
+            if item.get("work_scope") == "computer":
+                # Its runs use what the person approved on the task's card, on the owl's own
+                # computer. The computer, browser and websites are allowed again for the routine,
+                # by the person, before it runs (allow_routine_access).
+                if not access:
+                    raise Conflict("Choose an original assignment with a completed result.")
+                self._check_computer_access(db, recipient, access)
+            return self.save_schedule(
+                owner,
+                bot_id,
+                ScheduleInput(
+                    name=data.name,
+                    prompt=item["expected_result"],
+                    timing=data.timing,
+                    request_id=data.request_id,
+                    enabled=False,
+                    needs=_access_needs(access) if access else None,
+                ),
+                within=db,
+                assignment_id=assignment_id,
+            )
+
+    @staticmethod
+    def _assistant_owl_draft(db, task_id: str) -> dict | None:
+        row = db.execute(
+            "SELECT data FROM events WHERE task_id=? AND kind='assistant_owl_draft' ORDER BY seq LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return json.loads(row["data"]) if row is not None else None
+
+    @staticmethod
+    def _assignment_access(db, task_id: str) -> dict | None:
+        """What a computer task proposed from this turn may use (models.AssignmentAccess)."""
+        row = db.execute(
+            "SELECT data FROM events WHERE task_id=? AND kind='assignment_access' "
+            "ORDER BY seq DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return json.loads(row["data"]) if row is not None else None
+
+    @staticmethod
+    def _check_computer_access(db, recipient: dict, access: dict | None) -> None:
+        """A computer task's files are already in its owl's library, which keeps files."""
+        if not access or not access.get("file_ids"):
+            return
+        if not recipient["files_enabled"]:
+            raise Conflict("Turn on files for the owl before handing it these files.")
+        ids = access["file_ids"]
+        found = db.execute(
+            f"SELECT count(*) FROM files WHERE bot_id=? AND id IN ({','.join('?' * len(ids))})",
+            (recipient["id"], *ids),
+        ).fetchone()[0]
+        if found != len(ids):
+            raise NotFound("A file for this task is not in the owl's library.")
+
+    @classmethod
+    def has_assistant_owl_draft(cls, db, task_id: str) -> bool:
+        return cls._assistant_owl_draft(db, task_id) is not None
+
+    @staticmethod
+    def _require_no_pending_clarification(db, task_id: str) -> None:
+        if db.execute(
+            "SELECT 1 FROM clarifications WHERE source_task_id=? AND status='pending'",
+            (task_id,),
+        ).fetchone():
+            raise Conflict("Wait for the person's clarification before proposing work.")
+
+    @staticmethod
+    def _assistant_screen_request(db, task_id: str) -> dict | None:
+        row = db.execute(
+            "SELECT data FROM events WHERE task_id=? AND kind='assistant_screen_request' ORDER BY seq LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def request_assistant_screen(
+        self, owner: str, source_task_id: str, data: AssistantScreenRequest
+    ) -> dict:
+        """Save a request for the desktop to display. The engine never captures a screen."""
+        with self.connect(write=True) as db:
+            task = self._task(db, owner, source_task_id)
+            bot = self._bot(db, owner, task["bot_id"])
+            if not (
+                bot.get("assistant_enabled")
+                and task["config"].get("assistant_screen_requests")
+                and task["status"] == "running"
+            ):
+                raise Conflict("This turn cannot ask the desktop for a screenshot.")
+            self.direct_request(db, owner, bot["id"], source_task_id)
+            prior = self._assistant_screen_request(db, source_task_id)
+            if prior:
+                return prior
+            self._require_no_pending_clarification(db, source_task_id)
+            if (
+                self.has_assistant_owl_draft(db, source_task_id)
+                or db.execute(
+                    "SELECT 1 FROM owl_assignments WHERE source_task_id=?", (source_task_id,)
+                ).fetchone()
+            ):
+                raise Conflict("This turn already has a handoff to review.")
+            proposal = data.model_dump()
+            self._event(db, source_task_id, "assistant_screen_request", proposal)
+            return proposal
+
+    def propose_assistant_owl(
+        self, owner: str, source_task_id: str, data: AssistantOwlDraftInput
+    ) -> dict:
+        """Record the draft the person can review after this turn completes."""
+        with self.connect(write=True) as db:
+            source = self._task(db, owner, source_task_id)
+            assistant = self._bot(db, owner, source["bot_id"])
+            if (
+                not assistant.get("assistant_enabled")
+                or source["config"].get("skipped_question")
+                or not db.execute(
+                    "SELECT 1 FROM messages WHERE task_id=? AND role='user'", (source_task_id,)
+                ).fetchone()
+            ):
+                raise Conflict(
+                    "Only Alysis Assistant can propose a new owl from your current request."
+                )
+            self.direct_request(db, owner, source["bot_id"], source_task_id)
+            self._require_no_pending_clarification(db, source_task_id)
+            if self._assistant_screen_request(db, source_task_id):
+                raise Conflict("Wait for the person's screen approval before proposing work.")
+            if db.execute(
+                "SELECT 1 FROM owl_assignments WHERE source_task_id=?", (source_task_id,)
+            ).fetchone():
+                raise Conflict("This request already has an assignment.")
+            proposal = data.model_dump(exclude_defaults=True)
+            prior = self._assistant_owl_draft(db, source_task_id)
+            if prior is None:
+                if data.input_file_ids:
+                    self._handoff_inputs(
+                        db, owner, source["bot_id"], data.work_scope, data.input_file_ids
+                    )
+                self._event(db, source_task_id, "assistant_owl_draft", proposal)
+            elif AssistantOwlDraftInput.model_validate(prior) != data:
+                raise Conflict("This request already has a different owl draft.")
+            return proposal
+
+    def propose_assignment(self, owner: str, source_task_id: str, data: AssignmentInput) -> dict:
+        with self.connect(write=True) as db:
+            source = self._task(db, owner, source_task_id)
+            if (
+                not self._is_coordinator(db, owner, source["bot_id"])
+                or source["config"].get("skipped_question")
+                or not db.execute(
+                    "SELECT 1 FROM messages WHERE task_id=? AND role='user'", (source_task_id,)
+                ).fetchone()
+            ):
+                raise Conflict(
+                    "Only the coordinating owl can propose work from your current request."
+                )
+            self.direct_request(db, owner, source["bot_id"], source_task_id)
+            if self._bot(db, owner, source["bot_id"]).get("managed_assistant"):
+                self._require_no_pending_clarification(db, source_task_id)
+                if self._assistant_screen_request(db, source_task_id):
+                    raise Conflict("Wait for the person's screen approval before proposing work.")
+                if self.has_assistant_owl_draft(db, source_task_id):
+                    raise Conflict("This request already has a new owl draft.")
+            recipient = self._bot(db, owner, data.recipient_bot_id)
+            if recipient["id"] == source["bot_id"]:
+                raise Conflict("Assign the work to another owl.")
+            if recipient.get("managed_assistant"):
+                raise Conflict(
+                    "Alysis Assistant coordinates assignments. Choose another owl to do the work."
+                )
+            prior = db.execute(
+                "SELECT id,recipient_bot_id,brief,expected_result,work_scope FROM owl_assignments "
+                "WHERE source_task_id=?",
+                (source_task_id,),
+            ).fetchone()
+            brief = brief_with_steps(data.brief, data.steps)
+            proposed = {
+                **data.model_dump(exclude={"steps", "access", "repeats", "input_file_ids"}),
+                "brief": brief,
+            }
+            access = data.access.model_dump() if data.access else None
+            if prior:
+                manifest = db.execute(
+                    "SELECT proposed FROM owl_assignment_files WHERE assignment_id=?",
+                    (prior["id"],),
+                ).fetchone()
+                if [
+                    f["id"] for f in json.loads(manifest["proposed"] if manifest else "[]")
+                ] != data.input_file_ids:
+                    raise Conflict("This request already has a different file selection.")
+                if any(prior[key] != value for key, value in proposed.items()) or (
+                    self._assignment_access(db, source_task_id) != access
+                ):
+                    raise Conflict("This request already has a different assignment.")
+                assignment_id = prior["id"]
+            else:
+                assignment_id = uid()
+                db.execute(
+                    "INSERT INTO owl_assignments(id,source_task_id,recipient_bot_id,recipient_name,"
+                    "brief,expected_result,work_scope,decision,created_at) VALUES(?,?,?,?,?,?,?,'proposed',?)",
+                    (
+                        assignment_id,
+                        source_task_id,
+                        recipient["id"],
+                        recipient["name"],
+                        brief,
+                        data.expected_result,
+                        data.work_scope,
+                        time.time(),
+                    ),
+                )
+                if access is not None:
+                    self._check_computer_access(db, recipient, access)
+                    self._event(db, source_task_id, "assignment_access", access)
+                if data.input_file_ids:
+                    files = self._handoff_inputs(
+                        db, owner, source["bot_id"], data.work_scope, data.input_file_ids
+                    )
+                    db.execute(
+                        "INSERT INTO owl_assignment_files(assignment_id,proposed) VALUES(?,?)",
+                        (assignment_id, encode(files)),
+                    )
+                repeats = self._repeated_assignment(
+                    db,
+                    owner,
+                    source["bot_id"],
+                    recipient["id"],
+                    data.repeats if isinstance(data, OwlAssignmentProposal) else None,
+                )
+                if repeats:
+                    self._event(
+                        db, source_task_id, "assignment_repeats", {"assignment_id": repeats}
+                    )
+            return self._assignment_item(
+                self._assignment_rows(
+                    db, owner, source["bot_id"], assignment_id=assignment_id
+                ).fetchone()
+            )
+
+    @staticmethod
+    def _repeated_assignment(
+        db, owner: str, coordinator_id: str, recipient_id: str, assignment_id: str | None
+    ) -> str | None:
+        """The earlier assignment a proposal repeats, when it names one this coordinator gave the
+        same owl and that owl finished; anything else is no repeat."""
+        if not assignment_id:
+            return None
+        row = db.execute(
+            "SELECT a.id FROM owl_assignments a JOIN tasks parent ON parent.id=a.source_task_id "
+            "JOIN tasks child ON child.id=a.child_task_id "
+            "WHERE a.id=? AND parent.owner=? AND parent.bot_id=? AND a.recipient_bot_id=? "
+            "AND child.status='completed'",
+            (assignment_id, owner, coordinator_id, recipient_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def decide_assignment(
+        self,
+        owner: str,
+        bot_id: str,
+        assignment_id: str,
+        decision: str,
+        work_scope: str | None = None,
+        input_file_ids: list[str] | None = None,
+    ) -> dict:
+        if decision not in ("approve", "decline"):
+            raise ValueError("Invalid assignment decision.")
+        with self.connect(write=True) as db:
+            sender = self._bot(db, owner, bot_id)
+            row = self._assignment_rows(db, owner, bot_id, assignment_id=assignment_id).fetchone()
+            if row is None:
+                raise NotFound("Assignment not found.")
+            if decision == "approve" and row["work_scope"] != (work_scope or "text"):
+                raise Conflict("Review the assignment's access before approving it.")
+            item = self._assignment_item(row)
+            if decision == "approve":
+                if (
+                    input_file_ids is None
+                    and row["proposed_files"]
+                    and json.loads(row["proposed_files"])
+                ):
+                    raise Conflict(
+                        "Review the selected Library revisions before approving this handoff."
+                    )
+                if row["decision"] == "approved" and [
+                    f["id"] for f in item.get("input_files", [])
+                ] != (input_file_ids or []):
+                    raise Conflict("This assignment was approved with different file revisions.")
+            if (decision == "approve" and row["decision"] == "approved") or (
+                decision == "decline" and row["decision"] == "declined"
+            ):
+                return item
+            if item["status"] != "proposed":
+                raise Conflict("This assignment has already been decided or stopped.")
+            if decision == "decline":
+                db.execute(
+                    "UPDATE owl_assignments SET decision='declined' WHERE id=?", (assignment_id,)
+                )
+                return {**item, "status": "declined", "ready": False}
+            if not self._is_coordinator(db, owner, bot_id):
+                raise Conflict("This owl is no longer coordinating assignments.")
+            if row["parent_status"] != "completed":
+                raise Conflict("Wait for the coordinating owl to finish proposing this assignment.")
+            recipient = self._bot(db, owner, row["recipient_bot_id"])
+            if row["work_scope"] == "workbook" and not recipient["files_enabled"]:
+                raise Conflict("Turn on files for the assigned owl before approving this workbook.")
+            access = (
+                self._assignment_access(db, row["source_task_id"])
+                if row["work_scope"] == "computer"
+                else None
+            )
+            if row["work_scope"] == "computer":
+                if access is None:
+                    raise Conflict("This computer task doesn't say what the owl may use.")
+                self._check_computer_access(db, recipient, access)
+            self._check_task_queue_capacity(db, owner)
+            self._enqueue_assignment_child(
+                db,
+                owner,
+                recipient,
+                assignment_id,
+                time.time(),
+                visible=bool(sender.get("managed_assistant") or input_file_ids),
+                access=access,
+                input_file_ids=input_file_ids,
+            )
+            return self._assignment_item(
+                self._assignment_rows(db, owner, bot_id, assignment_id=assignment_id).fetchone()
+            )
+
+    def approve_assistant_owl(
+        self, owner: str, bot_id: str, data: AssistantOwlCreateInput | AssistantAssignmentApproval
+    ) -> dict:
+        """Commit the approved text assignment and any new owl together."""
+        existing = isinstance(data, AssistantAssignmentApproval)
+        start_task = existing or data.start_task
+        if not start_task and data.input_file_ids:
+            raise Conflict("Select Library revisions when starting an assignment.")
+        request_id = ("assist-assignment-" if existing else "assist-owl-") + hashlib.sha256(
+            data.request_id.encode()
+        ).hexdigest()
+        fingerprint = hashlib.sha256(
+            encode(data.model_dump(exclude={"request_id"}, exclude_defaults=True)).encode()
+        ).hexdigest()
+        with self.connect(write=True) as db:
+            assistant = self._bot(db, owner, bot_id)
+            if not assistant.get("managed_assistant"):
+                raise Conflict("Only Alysis Assistant can offer this handoff.")
+            prior = db.execute(
+                "SELECT t.bot_id,t.config,a.id AS assignment_id FROM tasks t "
+                "LEFT JOIN owl_assignments a ON a.source_task_id=t.id "
+                "WHERE t.owner=? AND t.request_id=?",
+                (owner, request_id),
+            ).fetchone()
+            if prior:
+                receipt = json.loads(prior["config"]).get("approved_owl_setup", {})
+                if prior["bot_id"] != bot_id or receipt.get("fingerprint") != fingerprint:
+                    raise Conflict("This request already approved a different owl handoff.")
+                bot = self._bot(db, owner, receipt["bot_id"])
+                row = (
+                    self._assignment_rows(
+                        db, owner, bot_id, assignment_id=prior["assignment_id"]
+                    ).fetchone()
+                    if prior["assignment_id"]
+                    else None
+                )
+                return {
+                    "bot": bot,
+                    "assignment": self._assignment_item(row) if row else None,
+                    **({"playbook": receipt["playbook"]} if "playbook" in receipt else {}),
+                }
+            if not self._is_coordinator(db, owner, bot_id):
+                raise Conflict("Turn on Alysis Assistant before approving the handoff.")
+            if start_task:
+                self._check_task_queue_capacity(db, owner)
+            if existing:
+                bot = self._bot(db, owner, data.recipient_bot_id)
+                if bot.get("managed_assistant"):
+                    raise Conflict("Choose another owl for this assignment.")
+                if data.work_scope == "workbook" and not bot["files_enabled"]:
+                    raise Conflict(
+                        "Turn on files for the assigned owl before approving this workbook."
+                    )
+                self._check_computer_access(
+                    db, bot, data.access.model_dump() if data.access else None
+                )
+            else:
+                if data.access is not None and data.access.file_ids:
+                    raise Conflict(
+                        "A new owl has no files yet. Create it first, then hand it the files."
+                    )
+                bot = self.save_bot(
+                    owner,
+                    BotInput(name=data.name, purpose=data.purpose, instructions=data.instructions),
+                    within=db,
+                )
+            chat = self._ensure_chat(db, owner, bot_id, assistant["name"])
+            receipt_id, now = uid(), time.time()
+            brief = brief_with_steps(data.brief, data.steps)
+            # Steps the person confirmed stay with the owl when they asked to keep them.
+            playbook = None
+            if data.playbook is not None:
+                from .playbooks import teach
+
+                playbook = teach(db, bot, data.steps, data.playbook, now)
+            setup = {"fingerprint": fingerprint, "bot_id": bot["id"]}
+            if playbook is not None:
+                setup["playbook"] = playbook
+            db.execute(
+                "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,"
+                "updated_at,conversation_visible) VALUES(?,?,?,?,?,?,'completed',?,?,?,0)",
+                (
+                    receipt_id,
+                    chat["id"],
+                    bot_id,
+                    owner,
+                    request_id,
+                    brief,
+                    encode({"approved_owl_setup": setup}),
+                    now,
+                    now,
+                ),
+            )
+            assignment = None
+            if start_task:
+                assignment_id = uid()
+                db.execute(
+                    "INSERT INTO owl_assignments(id,source_task_id,recipient_bot_id,recipient_name,"
+                    "brief,expected_result,work_scope,decision,created_at) VALUES(?,?,?,?,?,?,?,'proposed',?)",
+                    (
+                        assignment_id,
+                        receipt_id,
+                        bot["id"],
+                        bot["name"],
+                        brief,
+                        data.expected_result,
+                        data.work_scope,
+                        now,
+                    ),
+                )
+                self._enqueue_assignment_child(
+                    db,
+                    owner,
+                    bot,
+                    assignment_id,
+                    now,
+                    visible=True,
+                    access=data.access.model_dump() if data.access else None,
+                    input_file_ids=data.input_file_ids,
+                )
+                assignment = self._assignment_item(
+                    self._assignment_rows(db, owner, bot_id, assignment_id=assignment_id).fetchone()
+                )
+            return {
+                "bot": bot,
+                "assignment": assignment,
+                **({"playbook": playbook} if playbook is not None else {}),
+            }
+
+    def _enqueue_assignment_child(
+        self,
+        db,
+        owner,
+        recipient,
+        assignment_id,
+        now,
+        *,
+        visible=False,
+        access=None,
+        input_file_ids=None,
+    ) -> str:
+        chat = self._ensure_chat(db, owner, recipient["id"], recipient["name"])
+        child_id = uid()
+        config = {**recipient, "assignment_id": assignment_id}
+        if input_file_ids:
+            row = db.execute(
+                "SELECT parent.bot_id,a.work_scope FROM owl_assignments a JOIN tasks parent ON parent.id=a.source_task_id "
+                "WHERE a.id=? AND parent.owner=?",
+                (assignment_id, owner),
+            ).fetchone()
+            files = self._handoff_inputs(
+                db, owner, row["bot_id"], row["work_scope"], input_file_ids
+            )
+            shared = self._copy_assignment_files(db, owner, recipient, files)
+            db.execute(
+                "INSERT INTO owl_assignment_files(assignment_id,inputs) VALUES(?,?) "
+                "ON CONFLICT(assignment_id) DO UPDATE SET inputs=excluded.inputs",
+                (assignment_id, encode(shared)),
+            )
+            if access is not None:
+                ids = [*access.get("file_ids", []), *(f["id"] for f in shared)]
+                if len(ids) > ASSIGNMENT_FILES:
+                    raise Conflict("A computer handoff can include up to 20 Library revisions.")
+                access = {**access, "file_ids": ids}
+        if access is not None:
+            # A computer task runs as the owl's own turn, limited to what the card listed, with
+            # the approved brief as its request (assignment_computer.py).
+            approved = db.execute(
+                "SELECT brief,expected_result FROM owl_assignments WHERE id=?", (assignment_id,)
+            ).fetchone()
+            config["assignment_access"] = access
+            config["assignment_brief"] = {
+                "brief": approved["brief"],
+                "expected_result": approved["expected_result"],
+            }
+        db.execute(
+            "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,"
+            "updated_at,conversation_visible) VALUES(?,?,?,?,?,'','queued',?,?,?,?)",
+            (
+                child_id,
+                chat["id"],
+                recipient["id"],
+                owner,
+                "assignment_" + assignment_id,
+                encode(config),
+                now,
+                now,
+                int(visible),
+            ),
+        )
+        db.execute(
+            "UPDATE owl_assignments SET decision='approved',child_task_id=? WHERE id=?",
+            (child_id, assignment_id),
+        )
+        self._event(db, child_id, "queued", {})
+        return child_id
+
+    @staticmethod
+    def _handoff_file_ids(ids):
+        if (
+            not isinstance(ids, list)
+            or len(ids) > ASSIGNMENT_FILES
+            or any(not isinstance(value, str) or not 1 <= len(value) <= 100 for value in ids)
+            or len(set(ids)) != len(ids)
+        ):
+            raise Conflict("Select up to 20 distinct Library revisions for this handoff.")
+        return ids
+
+    @staticmethod
+    def _handoff_metadata(file):
+        return {
+            **{
+                k: file[k] for k in ("id", "name", "revision", "size_bytes", "media_type", "sha256")
+            },
+            "source_file_id": file["id"],
+            "source_name": file["name"],
+            "source_revision": file["revision"],
+            "source_bot_id": file["bot_id"],
+        }
+
+    def _handoff_inputs(self, db, owner, bot_id, scope, ids):
+        if ids and scope not in {"workbook", "computer"}:
+            raise Conflict("Choose a file-capable assignment before sharing Library files.")
+        bot = self._bot(db, owner, bot_id)
+        return [
+            self._handoff_metadata(f)
+            for f in self._attachable_files(db, bot, self._handoff_file_ids(ids))
+        ]
+
+    def _handoff_outputs(self, db, owner, child, ids):
+        files = self._attachable_files(
+            db, self._bot(db, owner, child["bot_id"]), self._handoff_file_ids(ids)
+        )
+        if any(f["source_task_id"] != child["id"] for f in files):
+            raise Conflict("An assignment may return only revisions created by this assigned task.")
+        if any(f.get("withdrawn_from_reply") for f in files):
+            raise Conflict("A withdrawn result cannot be returned from an assignment.")
+        return [self._handoff_metadata(f) for f in files]
+
+    def _copy_assignment_files(self, db, owner, destination, files, *, task_id=None):
+        """Copy exact immutable revisions inside the task transition. A new Library entry consumes
+        logical quota. External payloads gain another live reference to the same immutable object."""
+        if not files:
+            return []
+        if not destination["files_enabled"]:
+            raise Conflict("Turn on Library files for the owl receiving this handoff.")
+        self._check_library_capacity(db, owner, sum(f["size_bytes"] for f in files))
+        copied = []
+        for f in files:
+            file_id, now = uid(), time.time()
+            name = f["name"]
+            name = self._handoff_copy_name(db, destination["id"], name, now)
+            db.execute(
+                "INSERT INTO files(id,bot_id,name,content,source_task_id,created_at,updated_at,series_id,revision) "
+                "SELECT ?,?,?,content,?,?,?,?,1 FROM files WHERE id=? AND bot_id=?",
+                (
+                    file_id,
+                    destination["id"],
+                    name,
+                    task_id,
+                    now,
+                    now,
+                    file_id,
+                    f["source_file_id"],
+                    f["source_bot_id"],
+                ),
+            )
+            db.execute(
+                "INSERT INTO file_payloads(file_id,data,media_type,sha256) "
+                "SELECT ?,data,media_type,sha256 FROM file_payloads WHERE file_id=?",
+                (file_id, f["source_file_id"]),
+            )
+            db.execute(
+                'INSERT INTO file_objects(file_id,ref,size_bytes,"binary",media_type) '
+                'SELECT ?,ref,size_bytes,"binary",media_type FROM file_objects WHERE file_id=?',
+                (file_id, f["source_file_id"]),
+            )
+            copied.append({**f, "id": file_id, "name": name, "revision": 1})
+        return copied
+
+    @staticmethod
+    def _handoff_copy_name(db, bot_id, original, now):
+        """Reserve the first available numbered name, including outstanding uploads."""
+        names = (
+            "SELECT name FROM files WHERE bot_id=? UNION ALL SELECT name FROM file_uploads "
+            "WHERE bot_id=? AND status='pending' AND expires>?"
+        )
+        values = (bot_id, bot_id, now)
+        if not db.execute(
+            f"SELECT 1 FROM ({names}) n WHERE unicode_fold(name)=unicode_fold(?) LIMIT 1",
+            (*values, original),
+        ).fetchone():
+            return original
+        extension = Path(original).suffix
+        if len(extension) > 24:
+            extension = ""
+        stem = original[: -len(extension)] if extension else original
+        # A long stem may be truncated before a combining mark when numbering it.
+        # In this uncommon case a folded prefix is not a safe filter.
+        prefix = stem if len(stem) + len(extension) + 22 <= 160 else ""
+        rows = db.execute(
+            f"SELECT DISTINCT unicode_fold(name) AS folded FROM ({names}) n "
+            "WHERE instr(unicode_fold(name),unicode_fold(?))=1",
+            (*values, prefix),
+        )
+        occupied = {row["folded"] for row in rows}
+        # Use the database's own Unicode folding (SQLite and PostgreSQL can ship
+        # different Unicode versions). Only truncation boundaries vary with digit count.
+        number = 2
+        folded_stems = {}
+        folded_extension = db.execute("SELECT unicode_fold(?)", (extension,)).fetchone()[0]
+        while True:
+            marker = f" ({number})"
+            clipped = stem[: 160 - len(marker) - len(extension)]
+            if clipped not in folded_stems:
+                folded_stems[clipped] = db.execute("SELECT unicode_fold(?)", (clipped,)).fetchone()[
+                    0
+                ]
+            if folded_stems[clipped] + marker + folded_extension not in occupied:
+                return clipped + marker + extension
+            number += 1
+
+    def assignment_context(self, owner: str, child_task_id: str) -> dict:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT a.recipient_name,a.brief,a.expected_result,a.work_scope,r.scheduled_for,"
+                "r.config AS routine_config,parent.bot_id AS coordinator_bot_id,af.inputs,af.checkpoint_ids,"
+                "af.repair,child.output AS checkpoint_result FROM owl_assignments a "
+                "JOIN tasks parent ON parent.id=a.source_task_id "
+                "JOIN tasks child ON child.id=a.child_task_id "
+                "LEFT JOIN owl_assignment_files af ON af.assignment_id=a.id "
+                "LEFT JOIN schedule_runs r ON r.task_id=child.id "
+                "WHERE a.child_task_id=? AND parent.owner=? AND child.owner=?",
+                (child_task_id, owner, owner),
+            ).fetchone()
+            if row is None:
+                raise NotFound("Assignment not found.")
+            scope = {key: row[key] for key in ("recipient_name", "brief", "expected_result")}
+            scope.update(
+                coordinator_bot_id=row["coordinator_bot_id"],
+                input_files=json.loads(row["inputs"] or "[]"),
+                checkpoint_file_ids=json.loads(row["checkpoint_ids"] or "[]"),
+                checkpoint_result=row["checkpoint_result"] or "",
+                repair=json.loads(row["repair"]) if row["repair"] else None,
+            )
+            if repair := scope["repair"]:
+                successor = self._assignment_repair_successor(db, child_task_id, repair["file_id"])
+                if successor:
+                    repair["saved_file_id"] = successor
+            selection = db.execute(
+                "SELECT data FROM events WHERE task_id=? AND kind='assignment_outputs_selected' "
+                "ORDER BY seq DESC LIMIT 1",
+                (child_task_id,),
+            ).fetchone()
+            scope["selected_output_file_ids"] = (
+                json.loads(selection["data"]).get("file_ids", []) if selection else []
+            )
+            if scope["selected_output_file_ids"]:
+                withheld = {
+                    r[0]
+                    for r in db.execute(
+                        "SELECT w.file_id FROM owl_withdrawn_results w JOIN files f ON f.id=w.file_id WHERE f.source_task_id=?",
+                        (child_task_id,),
+                    )
+                }
+                scope["selected_output_file_ids"] = [
+                    f for f in scope["selected_output_file_ids"] if f not in withheld
+                ]
+            if row["work_scope"] != "text":
+                scope["work_scope"] = row["work_scope"]
+            if row["routine_config"] is not None:
+                timing = json.loads(row["routine_config"])["timing"]
+                scope["occurrence"] = {
+                    "scheduled_for": row["scheduled_for"],
+                    "time_zone": timing.get("timezone"),
+                    "person_zone": self._time_zone(db, owner),
+                }
+            return scope
+
+    def _assignment_input_bot(self, owner, child_task_id, file_id):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT af.inputs,b.id,b.files_enabled FROM owl_assignment_files af "
+                "JOIN owl_assignments a ON a.id=af.assignment_id "
+                "JOIN tasks child ON child.id=a.child_task_id JOIN bots b ON b.id=child.bot_id "
+                "WHERE child.id=? AND child.owner=? AND b.owner=? AND a.decision='approved'",
+                (child_task_id, owner, owner),
+            ).fetchone()
+            if not row or not any(f["id"] == file_id for f in json.loads(row["inputs"])):
+                raise NotFound("This revision was not shared with the assignment.")
+            if not row["files_enabled"]:
+                raise Conflict("Library file access is off for this owl.")
+            return row["id"]
+
+    def assignment_input_chunks(self, owner: str, child_task_id: str, file_id: str, *, offset=0):
+        bot_id = self._assignment_input_bot(owner, child_task_id, file_id)
+        return self.file_chunks(owner, bot_id, file_id, offset=offset)
+
+    def assignment_input_data(self, owner: str, child_task_id: str, file_id: str) -> bytes:
+        bot_id = self._assignment_input_bot(owner, child_task_id, file_id)
+        return self.file_data(owner, bot_id, file_id)
+
+    def checkpoint_assignment_result(
+        self,
+        owner: str,
+        child_task_id: str,
+        result: str,
+        *,
+        output_file_ids: list[str] | None = None,
+    ) -> None:
+        """Keep the child's actual output before a separate verification call."""
+        self._check_assignment_result_size(result)
+        with self.connect(write=True) as db:
+            task = self._task(db, owner, child_task_id)
+            if task["status"] != "running" or not task["config"].get("assignment_id"):
+                raise Conflict("The assigned task is no longer running.")
+            if output_file_ids is not None:
+                self._handoff_outputs(db, owner, task, output_file_ids)
+                db.execute(
+                    "INSERT INTO owl_assignment_files(assignment_id,checkpoint_ids) VALUES(?,?) "
+                    "ON CONFLICT(assignment_id) DO UPDATE SET checkpoint_ids=excluded.checkpoint_ids",
+                    (task["config"]["assignment_id"], encode(output_file_ids)),
+                )
+            db.execute(
+                "UPDATE tasks SET output=?,updated_at=? WHERE id=?",
+                (result, time.time(), child_task_id),
+            )
+
+    @staticmethod
+    def _assignment_repair_successor(db, child_task_id, base_file_id):
+        row = db.execute(
+            "SELECT next.id FROM files base JOIN files next ON next.bot_id=base.bot_id "
+            "AND next.series_id=base.series_id AND next.revision=base.revision+1 "
+            "WHERE base.id=? AND base.source_task_id=? AND next.source_task_id=?",
+            (base_file_id, child_task_id, child_task_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def begin_assignment_repair(
+        self, owner: str, child_task_id: str, file_id: str, reason: str
+    ) -> bool:
+        """Claim the workbook's single repair before asking its specialist to author again."""
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 2000:
+            raise Conflict("A workbook repair needs the reviewer's bounded reason.")
+        with self.connect(write=True) as db:
+            child = self._task(db, owner, child_task_id)
+            assignment_id = child["config"].get("assignment_id")
+            if child["status"] != "running" or not assignment_id:
+                raise Conflict("The assigned task is no longer running.")
+            receipt = db.execute(
+                "SELECT af.checkpoint_ids,af.repair FROM owl_assignment_files af "
+                "JOIN owl_assignments a ON a.id=af.assignment_id "
+                "WHERE a.id=? AND a.child_task_id=? AND a.work_scope='workbook'",
+                (assignment_id, child_task_id),
+            ).fetchone()
+            if receipt and receipt["repair"] is not None:
+                return False
+            if not receipt or json.loads(receipt["checkpoint_ids"] or "[]") != [file_id]:
+                raise Conflict("Only the exact workbook submitted for review can be repaired.")
+            self._handoff_outputs(db, owner, child, [file_id])
+            return bool(
+                db.execute(
+                    "UPDATE owl_assignment_files SET repair=? WHERE assignment_id=? AND repair IS NULL",
+                    (encode({"file_id": file_id, "reason": reason.strip()}), assignment_id),
+                ).rowcount
+            )
+
+    @staticmethod
+    def _check_assignment_result_size(result: str) -> None:
+        if len(encode(result).encode("utf-8")) > ASSIGNMENT_RESULT_BYTES:
+            raise LimitReached("The assignment result exceeds the size limit for saved text.")
+
+    def _return_assignment_files(self, db, owner, child, assignment_id, result, verdict, ids):
+        receipt = db.execute(
+            "SELECT checkpoint_ids,inputs,repair FROM owl_assignment_files WHERE assignment_id=?",
+            (assignment_id,),
+        ).fetchone()
+        checkpoint = (
+            json.loads(receipt["checkpoint_ids"])
+            if receipt and receipt["checkpoint_ids"] is not None
+            else None
+        )
+        if ids is None:
+            ids = checkpoint
+            if not ids:
+                return
+        elif checkpoint is not None and ids != checkpoint:
+            raise Conflict("The returned revisions differ from the result submitted for review.")
+        elif ids and checkpoint is None:
+            raise Conflict("Save these exact revisions for review before releasing the result.")
+        db.execute(
+            "INSERT INTO owl_assignment_files(assignment_id) VALUES(?) ON CONFLICT(assignment_id) DO NOTHING",
+            (assignment_id,),
+        )
+        if (
+            verdict
+            and verdict.status != "met"
+            and (ids or (receipt and json.loads(receipt["inputs"])))
+        ):
+            source = db.execute(
+                "SELECT source_task_id FROM owl_assignments WHERE id=?", (assignment_id,)
+            ).fetchone()
+            self._event(
+                db, source["source_task_id"], "assignment_review", {"assignment_id": assignment_id}
+            )
+        if not ids or verdict is None or verdict.status != "met":
+            return
+        if receipt and receipt["repair"]:
+            repaired_id = self._assignment_repair_successor(
+                db, child["id"], json.loads(receipt["repair"])["file_id"]
+            )
+            if ids != [repaired_id]:
+                raise Conflict("Only the repaired workbook revision can be released as corrected.")
+        files = self._handoff_outputs(db, owner, child, ids)
+        parent = db.execute(
+            "SELECT t.bot_id,t.chat_id,a.recipient_name,a.brief,a.expected_result FROM owl_assignments a "
+            "JOIN tasks t ON t.id=a.source_task_id WHERE a.id=? AND a.child_task_id=? AND t.owner=?",
+            (assignment_id, child["id"], owner),
+        ).fetchone()
+        lead = self._bot(db, owner, parent["bot_id"])
+        if not lead["files_enabled"] and not (receipt and json.loads(receipt["inputs"])):
+            # A Library-disabled coordinator can still ask for a workbook in the recipient's
+            # Library. Keep its exact reviewed link there, without writing into the disabled Library.
+            db.execute(
+                "UPDATE owl_assignment_files SET recipient_artifact_id=? WHERE assignment_id=?",
+                (files[0]["id"], assignment_id),
+            )
+            return
+        resume_id, now = uid(), time.time()
+        db.execute(
+            "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,'','queued',?,?,?)",
+            (
+                resume_id,
+                parent["chat_id"],
+                lead["id"],
+                owner,
+                "assignment-return-" + assignment_id,
+                encode(lead),
+                now,
+                now,
+            ),
+        )
+        returned = self._copy_assignment_files(db, owner, lead, files, task_id=resume_id)
+        db.execute(
+            "UPDATE owl_assignment_files SET outputs=? WHERE assignment_id=?",
+            (encode(returned), assignment_id),
+        )
+        delivery = {
+            "assignment_id": assignment_id,
+            "child_task_id": child["id"],
+            **{k: parent[k] for k in ("recipient_name", "brief", "expected_result")},
+            "result": result,
+            "verification": verdict.model_dump(),
+            "returned_files": returned,
+        }
+        db.execute(
+            "UPDATE tasks SET config=? WHERE id=?",
+            (encode({**lead, "assignment_return": delivery}), resume_id),
+        )
+        for ordinal, file in enumerate(returned):
+            db.execute(
+                "INSERT INTO task_files(task_id,ordinal,file_id,name,media_type,size_bytes) VALUES(?,?,?,?,?,?)",
+                (
+                    resume_id,
+                    ordinal,
+                    file["id"],
+                    file["name"],
+                    file["media_type"],
+                    file["size_bytes"],
+                ),
+            )
+        self._event(db, resume_id, "queued", {})
+
+    @staticmethod
+    def _check_task_queue_capacity(db, owner: str) -> None:
+        if (
+            db.execute(
+                "SELECT count(*) FROM tasks WHERE owner=? AND status IN ('queued','running','waiting','cancelling')",
+                (owner,),
+            ).fetchone()[0]
+            >= 20
+        ):
+            raise LimitReached("The task queue is full. Wait for tasks to finish.")
 
     def continue_without_answer(self, db, owner: str, source: dict, question) -> dict | None:
         """Queue the turn that carries ``source`` on after the person skipped its question.
@@ -2347,14 +3982,7 @@ class Store:
             ).fetchone()
         ):
             return None
-        if (
-            db.execute(
-                "SELECT count(*) FROM tasks WHERE owner=? AND status IN ('queued','running','waiting','cancelling')",
-                (owner,),
-            ).fetchone()[0]
-            >= 20
-        ):
-            raise LimitReached("The task queue is full. Wait for tasks to finish.")
+        self._check_task_queue_capacity(db, owner)
         bot = self._bot(db, owner, source["bot_id"])
         task_id, now = uid(), time.time()
         # The person moved its conversation on: an archived owl comes back (_bring_back).
@@ -2408,13 +4036,14 @@ class Store:
                     raise Conflict("This request ID was already used for a different message.")
                 return self._task(db, owner, previous["id"])
             bot = self._bot(db, owner, source["bot_id"])
-            if self._room_row(db, source["chat_id"]) is not None:
+            _, scope = self._scope(db, owner, source["chat_id"])
+            if scope.room:
                 raise Conflict("A reply in a room can't get a new answer yet.")
             # A message the person cancelled before it started is not in the chat (queued_messages).
             latest = db.execute(
-                f"SELECT id FROM tasks t WHERE {ChatScope(bot['id']).tasks} AND {not_withdrawn('t')} "
+                f"SELECT id FROM tasks t WHERE {scope.tasks} AND {not_withdrawn('t')} "
                 "ORDER BY created_at DESC,id DESC LIMIT 1",
-                (bot["id"],),
+                (scope.value,),
             ).fetchone()
             if latest is None or latest["id"] != task_id:
                 raise Conflict("Only the latest reply can get a new answer.")
@@ -2439,6 +4068,9 @@ class Store:
             ).fetchone()
             if not spoken or not persons_request(original):
                 raise Conflict("Only a reply to your own message can get a new answer.")
+            target = original["config"].get("interactive_target")
+            if target:
+                self._interactive_task_base(db, owner, original, target)
             if (
                 db.execute(
                     "SELECT count(*) FROM tasks WHERE owner=? AND status IN ('queued','running','waiting','cancelling')",
@@ -2467,6 +4099,7 @@ class Store:
                         {
                             **bot,
                             "reply_review_enabled": self._reply_review_enabled(db, owner),
+                            **({"interactive_target": target} if target else {}),
                             "regenerate": {
                                 "task_id": original["id"],
                                 "replaces": replaces,
@@ -2478,6 +4111,12 @@ class Store:
                     now,
                 ),
             )
+            if target:
+                db.execute(
+                    "INSERT INTO task_files(task_id,ordinal,file_id,name,media_type,size_bytes) "
+                    "SELECT ?,ordinal,file_id,name,media_type,size_bytes FROM task_files WHERE task_id=?",
+                    (new_id, original["id"]),
+                )
             self._event(db, new_id, "queued", {})
             return self._task(db, owner, new_id)
 
@@ -2489,6 +4128,7 @@ class Store:
         data: TaskInput,
         *,
         bot_id: str | None = None,
+        require_active_assistant: bool = False,
     ) -> dict:
         """Queue a message for an owl. In a room's chat, ``bot_id`` names the owl it is for (the
         room's own route sends the person's messages: rooms.py)."""
@@ -2505,14 +4145,31 @@ class Store:
             if bot_id is not None and bot_id != bot["id"]:
                 raise Conflict("This conversation belongs to another owl.")
         previous = db.execute(
-            "SELECT id,bot_id,message FROM tasks WHERE owner=? AND request_id=?",
+            "SELECT id,chat_id,bot_id,message,config FROM tasks WHERE owner=? AND request_id=?",
             (owner, data.request_id),
         ).fetchone()
         if previous:
             from .queued_messages import sent_as
 
+            saved_target = json.loads(previous["config"]).get("interactive_target")
+            original_target = (
+                {k: v for k, v in saved_target.items() if k in InteractiveTarget.model_fields}
+                if saved_target
+                else None
+            )
+            proposed_target = (
+                data.interactive_target.model_dump(exclude_none=True)
+                if data.interactive_target
+                else None
+            )
             if (
                 previous["bot_id"] != bot["id"]
+                or original_target != proposed_target
+                or (saved_target and previous["chat_id"] != chat_id)
+                or (
+                    previous["chat_id"] != chat_id
+                    and (self._is_thread(db, chat_id) or self._is_thread(db, previous["chat_id"]))
+                )
                 # A message changed or cancelled while it waited is still the one first sent.
                 or (
                     previous["message"] != data.message
@@ -2522,18 +4179,32 @@ class Store:
             ):
                 raise Conflict("This request ID was already used for a different message.")
             return self._task(db, owner, previous["id"])
+        if (
+            require_active_assistant
+            and bot.get("managed_assistant")
+            and not bot["assistant_enabled"]
+        ):
+            raise Conflict("Turn on Assist before sending a new message to Alysis Assistant.")
         attached = self._attachable_files(db, bot, data.file_ids)
-        if not room:
+        interactive_target = None
+        if target := data.interactive_target:
+            if room:
+                raise Conflict("Open the interactive result in its owl's original chat.")
+            file = self._interactive_file(db, owner, bot["id"], target.file_id)
+            if file["source_chat_id"] is not None and file["source_chat_id"] != chat_id:
+                raise Conflict("Open the interactive result in its original chat.")
+            self._check_interactive_version(
+                file, target.revision, target.sha256, target.state_version
+            )
+            interactive_target = {
+                **target.model_dump(exclude_none=True),
+                "series_id": file["series_id"],
+                "name": file["name"],
+            }
+        elif not room and not self._is_thread(db, chat_id):
             chat = self._ensure_chat(db, owner, bot["id"], bot["name"])
         chat_id = chat["id"]
-        if (
-            db.execute(
-                "SELECT count(*) FROM tasks WHERE owner=? AND status IN ('queued','running','waiting','cancelling')",
-                (owner,),
-            ).fetchone()[0]
-            >= 20
-        ):
-            raise LimitReached("The task queue is full. Wait for tasks to finish.")
+        self._check_task_queue_capacity(db, owner)
         task_id, now = uid(), time.time()
         # Routines and file events never reach an archived owl; anything else here is work the
         # person started for it (a message, an answer, an approval, Run now), so it comes back.
@@ -2551,7 +4222,20 @@ class Store:
                 data.message,
                 "queued",
                 # Keep the choice stable through approvals, reconnects and recovery.
-                encode({**bot, "reply_review_enabled": self._reply_review_enabled(db, owner)}),
+                encode(
+                    {
+                        **bot,
+                        "reply_review_enabled": self._reply_review_enabled(db, owner),
+                        **(
+                            {"interactive_target": interactive_target} if interactive_target else {}
+                        ),
+                        **(
+                            {"assistant_screen_requests": True}
+                            if bot.get("managed_assistant") and data.assistant_screen_requests
+                            else {}
+                        ),
+                    }
+                ),
                 now,
                 now,
             ),
@@ -2751,6 +4435,8 @@ class Store:
         publish_reply: bool = True,
         failure: dict | None = None,
         routine_failure: RunFailure | None = None,
+        assignment_verification: dict | None = None,
+        assignment_output_file_ids: list[str] | None = None,
         checked: bool = False,
         nothing_new: str | None = None,
     ) -> None:
@@ -2779,6 +4465,15 @@ class Store:
                 raise ValueError("Only a routine's run ends with nothing new.")
             if task["status"] == "cancelling":
                 status, content, error = "cancelled", "", None
+            assignment_id = task["config"].get("assignment_id")
+            if assignment_id:
+                publish_reply = bool(
+                    db.execute(
+                        "SELECT 1 FROM tasks WHERE id=? AND conversation_visible=1", (task_id,)
+                    ).fetchone()
+                )
+                content = content or task["output"]
+                self._check_assignment_result_size(content)
             if status == "completed" and self._defer_peer_report(db, task):
                 return
             if (
@@ -2794,6 +4489,24 @@ class Store:
                 failure = failures.failure(failures.UNKNOWN)
             if status not in ("failed", "interrupted"):
                 failure = None
+            if assignment_id and status == "completed":
+                verdict = (
+                    AssignmentVerification.model_validate(assignment_verification)
+                    if assignment_verification is not None
+                    else None
+                )
+                if verdict is not None:
+                    db.execute(
+                        "UPDATE owl_assignments SET verification=? WHERE id=? AND child_task_id=?",
+                        (verdict.model_dump_json(), assignment_id, task_id),
+                    )
+                if nothing_new is None:
+                    self._return_assignment_files(
+                        db, owner, task, assignment_id, content, verdict, assignment_output_file_ids
+                    )
+                # A routine's run that checked and found nothing new has no result to review.
+                if (verdict is None or verdict.status != "met") and nothing_new is None:
+                    routine_failure = RunFailure("review")
             quiet = status == "completed" and nothing_new is not None
             if quiet:
                 content, publish_reply = "", False
@@ -2946,6 +4659,56 @@ class Store:
             self._task(db, owner, task_id)
             self._event(db, task_id, kind, data)
 
+    def show_reply_draft(self, owner: str, task_id: str, text: str) -> int | None:
+        """Record the owl's draft reply as the reply checker starts on it, for the owner's live
+        view of the turn (task_events.REPLY_DRAFT). Returns its number in the task, or None when
+        there is nothing to show: no text, or a turn that is stopping or has ended."""
+        with self.connect(write=True) as db:
+            task = self._task(db, owner, task_id)
+            if not text.strip() or task["status"] not in ("running", "waiting"):
+                return None
+            # A draft still open is replaced by this one.
+            self._settle_reply_drafts(db, task_id)
+            number = (
+                db.execute(
+                    "SELECT count(*) FROM events WHERE task_id=? AND kind=?", (task_id, REPLY_DRAFT)
+                ).fetchone()[0]
+                + 1
+            )
+            self._event(db, task_id, REPLY_DRAFT, {"draft": number, "text": text})
+            return number
+
+    def withdraw_reply_draft(self, owner: str, task_id: str) -> None:
+        """The draft being checked will not be published (the checker withheld it, its check
+        failed, or the turn set it aside): its text goes, and reply_draft_withdrawn says so. A
+        turn with no draft open is left as it is."""
+        with self.connect(write=True) as db:
+            self._task(db, owner, task_id)
+            draft = self._open_reply_draft(db, task_id)
+            if draft is not None:
+                self._event(db, task_id, REPLY_DRAFT_WITHDRAWN, {"draft": draft["draft"]})
+
+    @staticmethod
+    def _open_reply_draft(db, task_id: str) -> dict | None:
+        """The task's latest draft while it still carries its text, i.e. while it is checked."""
+        row = db.execute(
+            "SELECT data FROM events WHERE task_id=? AND kind=? ORDER BY seq DESC LIMIT 1",
+            (task_id, REPLY_DRAFT),
+        ).fetchone()
+        data = json.loads(row["data"]) if row is not None else None
+        return data if isinstance(data, dict) and "text" in data else None
+
+    @staticmethod
+    def _settle_reply_drafts(db, task_id: str) -> None:
+        """Remove the text of the task's drafts: a draft's text lasts only while it is checked."""
+        for row in db.execute(
+            "SELECT seq,data FROM events WHERE task_id=? AND kind=?", (task_id, REPLY_DRAFT)
+        ).fetchall():
+            data = json.loads(row["data"])
+            if isinstance(data, dict) and "text" in data:
+                del data["text"]
+                db.execute("UPDATE events SET data=? WHERE seq=?", (encode(data), row["seq"]))
+
     def restart_cut(self, owner: str, task_id: str) -> bool:
         """The runtime is stopping under this turn (an app update or quit): settle it now as a
         restart would (_cut_by_restart). False when it is not a turn being worked on (a turn the
@@ -3040,6 +4803,26 @@ class Store:
             if not task["restarts"] or restarted is None:
                 return None
             return steps_taken(db, task_id, before=restarted)
+
+    def has_model_calls(self, owner, task_id, task_limit, workspace_limit, needed):
+        """May optional work spend a call and still leave the requested room for the answer?"""
+        if task_limit is None and workspace_limit is None:
+            return True
+        with self.connect() as db:
+            if task_limit is not None:
+                calls = db.execute(
+                    "SELECT calls FROM tasks WHERE id=? AND owner=?", (task_id, owner)
+                ).fetchone()
+                if not calls or task_limit - calls[0] < needed:
+                    return False
+            if workspace_limit is not None:
+                used = db.execute(
+                    "SELECT count(*) FROM provider_calls p JOIN tasks t ON t.id=p.task_id WHERE t.owner=?",
+                    (owner,),
+                ).fetchone()[0]
+                if workspace_limit - used < needed:
+                    return False
+        return True
 
     def reserve_call(
         self,
@@ -3766,6 +5549,16 @@ class Store:
                 is not None
             )
 
+    def visible_file_name(self, owner: str, bot_id: str, file_id: str) -> str | None:
+        """Read a Library label for the activity feed without reading or hashing the file."""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT f.name FROM files f JOIN bots b ON b.id=f.bot_id "
+                "WHERE f.id=? AND f.bot_id=? AND b.owner=? AND b.files_enabled=1",
+                (file_id, bot_id, owner),
+            ).fetchone()
+            return row["name"] if row else None
+
     def files_page(self, owner, bot_id, data: FileQuery):
         """Current immutable file metadata, with deletion-safe keyset paging.
 
@@ -3786,7 +5579,7 @@ class Store:
             elif not data.include_versions and not data.source_task_id:
                 where += " AND NOT EXISTS (SELECT 1 FROM files n WHERE n.bot_id=files.bot_id AND n.series_id=files.series_id AND n.revision>files.revision)"
             if data.source_task_id:
-                where += " AND source_task_id=?"
+                where += " AND source_task_id=? AND NOT EXISTS (SELECT 1 FROM owl_withdrawn_results w WHERE w.file_id=files.id)"
                 values.append(data.source_task_id)
             total = db.execute("SELECT count(*) FROM files WHERE " + where, values).fetchone()[0]
             if data.query:
@@ -3827,11 +5620,22 @@ class Store:
     @staticmethod
     def _file_metadata(db, row):
         item = dict(row)
+        if item["name"].endswith(".owlquery.json"):
+            binding = db.execute(
+                "SELECT sources FROM owl_query_files WHERE file_id=?", (item["id"],)
+            ).fetchone()
+            if binding:
+                item["query_result"] = True
+                descriptor = json.loads(binding[0])
+                if isinstance(descriptor, dict):
+                    item["query_title"] = descriptor.get("title")
         versions = db.execute(
-            "SELECT max(revision),count(*) FROM files WHERE bot_id=? AND series_id=?",
-            (item["bot_id"], item["series_id"]),
+            "SELECT max(revision),count(*),EXISTS(SELECT 1 FROM owl_withdrawn_results WHERE file_id=?) FROM files WHERE bot_id=? AND series_id=?",
+            (item["id"], item["bot_id"], item["series_id"]),
         ).fetchone()
         item.update(is_latest=item["revision"] == versions[0], version_count=versions[1])
+        if versions[2]:
+            item["withdrawn_from_reply"] = True
         external = db.execute(
             "SELECT * FROM file_objects WHERE file_id=?", (item["id"],)
         ).fetchone()
@@ -3863,6 +5667,99 @@ class Store:
                 sha256=hashlib.sha256(data).hexdigest(),
             )
         return item
+
+    def _interactive_file(self, db, owner: str, bot_id: str, file_id: str) -> dict:
+        bot = self._bot(db, owner, bot_id)
+        row = db.execute(
+            "SELECT * FROM files WHERE id=? AND bot_id=?", (file_id, bot_id)
+        ).fetchone()
+        if row is None:
+            raise NotFound("Interactive file not found.")
+        if not bot["files_enabled"]:
+            raise Conflict("Library files are disabled for this owl.")
+        file = self._file_metadata(db, row)
+        # The chat's latest delivered revision remains a valid editing target if a newer
+        # working revision was withheld. The ordinary Library still reports the physical head.
+        if not file["is_latest"]:
+            file["is_latest"] = self._delivered_head(db, bot_id, file["series_id"]) == file_id
+        if Path(file["name"]).suffix.lower() not in {".html", ".htm"} or (
+            file["binary"] and file["media_type"].split(";", 1)[0].lower() != "text/html"
+        ):
+            raise Conflict("Choose an HTML file for an interactive result.")
+        if file["size_bytes"] > INTERACTIVE_HTML_BYTES:
+            raise LimitReached("Interactive HTML files are limited to 8 MiB.")
+        source_chat_id = None
+        if file["source_task_id"]:
+            source = db.execute(
+                "SELECT chat_id FROM tasks WHERE id=? AND bot_id=? AND owner=?",
+                (file["source_task_id"], bot_id, owner),
+            ).fetchone()
+            if not source:
+                raise NotFound("The source chat of this interactive result is unavailable.")
+            source_chat_id = source["chat_id"]
+        state = db.execute(
+            "SELECT version,data FROM interactive_result_states WHERE series_id=?",
+            (file["series_id"],),
+        ).fetchone()
+        return {
+            **{key: file[key] for key in ("name", "series_id", "revision", "sha256", "is_latest")},
+            "file_id": file_id,
+            "source_chat_id": source_chat_id,
+            "version": state["version"] if state else 0,
+            "data": json.loads(state["data"]) if state else None,
+        }
+
+    @staticmethod
+    def _check_interactive_version(file, revision, sha256, version):
+        if not file["is_latest"] or file["revision"] != revision or file["sha256"] != sha256:
+            raise Conflict("This HTML revision has changed. Open the latest file and select again.")
+        if file["version"] != version:
+            raise Conflict("The interactive result state changed. Reload it before continuing.")
+
+    def interactive_state(
+        self, owner: str, bot_id: str, file_id: str, update: InteractiveStateWrite | None = None
+    ) -> dict:
+        with self.connect(write=update is not None) as db:
+            file = self._interactive_file(db, owner, bot_id, file_id)
+            if update is not None:
+                self._check_interactive_version(
+                    file, update.revision, update.sha256, update.expected_version
+                )
+                if file["version"] == 2**53 - 1:
+                    raise LimitReached(
+                        "The interactive result has reached its state version limit."
+                    )
+                version = file["version"] + 1
+                db.execute(
+                    "INSERT INTO interactive_result_states(series_id,version,data) VALUES(?,?,?) "
+                    "ON CONFLICT(series_id) DO UPDATE SET version=excluded.version,data=excluded.data",
+                    (file["series_id"], version, encode(update.data)),
+                )
+                file.update(version=version, data=update.data)
+            return {**file, "max_selections": 8}
+
+    def _interactive_task_base(self, db, owner, task, target):
+        file = self._interactive_file(db, owner, task["bot_id"], target["file_id"])
+        if (
+            file["series_id"] != target["series_id"]
+            or file["source_chat_id"] not in (None, task["chat_id"])
+            or target["file_id"] not in self._attached_file_ids(db, task["id"])
+        ):
+            raise Conflict("This selection does not belong to the attached result in this chat.")
+        self._check_interactive_version(
+            file, target["revision"], target["sha256"], target["state_version"]
+        )
+        return file
+
+    def interactive_revision_context(self, owner: str, task_id: str) -> dict:
+        """Only an exact, still-current selection can supply its state to a revision turn."""
+        with self.connect() as db:
+            task = self._task(db, owner, task_id)
+            target = task["config"].get("interactive_target")
+            if not target:
+                raise NotFound("This task has no interactive selection.")
+            file = self._interactive_task_base(db, owner, task, target)
+            return {**target, "state": file["data"]}
 
     def file_data(self, owner: str, bot_id: str, file_id: str) -> bytes:
         if self.file(owner, bot_id, file_id)["size_bytes"] > INLINE_FILE_BYTES:
@@ -3937,9 +5834,15 @@ class Store:
         )
 
     def save_file(
-        self, owner: str, bot_id: str, data: FileInput, *, source_task_id: str | None = None
+        self,
+        owner: str,
+        bot_id: str,
+        data: FileInput,
+        *,
+        source_task_id: str | None = None,
+        payload: bytes | None = None,
     ) -> dict:
-        return self._save_file(owner, bot_id, data, source_task_id=source_task_id)
+        return self._save_file(owner, bot_id, data, source_task_id=source_task_id, payload=payload)
 
     @staticmethod
     def _library_usage(db, owner, *, exclude_upload=None, exclude_reservation=None):
@@ -4040,7 +5943,16 @@ class Store:
             task = self._task(db, owner, source_task_id)
             if task["bot_id"] != bot_id or not self.executing(db, task) or not bot["files_enabled"]:
                 raise Conflict("This task cannot write files for this bot.")
-        self._revision_base(db, bot_id, data.name, data.previous_file_id)
+            if target := task["config"].get("interactive_target"):
+                self._interactive_task_base(db, owner, task, target)
+                if data.name != target["name"] or data.previous_file_id != target["file_id"]:
+                    raise Conflict("Revise only the exact HTML file selected in this turn.")
+                size = binary_size if binary_size is not None else len(data.content.encode("utf-8"))
+                if size > INTERACTIVE_HTML_BYTES:
+                    raise LimitReached("Interactive HTML files are limited to 8 MiB.")
+        self._revision_base(
+            db, bot_id, data.name, data.previous_file_id, delivering=bool(source_task_id)
+        )
         if db.execute(
             "SELECT 1 FROM file_uploads WHERE bot_id=? AND name=? AND status='pending' AND expires>? AND id IS DISTINCT FROM ?",
             (bot_id, data.name, time.time(), exclude_upload),
@@ -4184,6 +6096,7 @@ class Store:
         db=None,
         exclude_upload=None,
         object_ref=None,
+        query_sources=None,
     ):
         if payload is not None:
             chunks = (
@@ -4214,6 +6127,7 @@ class Store:
                 db=db,
                 exclude_upload=exclude_upload,
                 object_ref=object_ref,
+                query_sources=query_sources,
             )
         except BaseException:
             if object_ref is not None and exclude_upload is None:
@@ -4232,6 +6146,7 @@ class Store:
         db,
         exclude_upload,
         object_ref,
+        query_sources=None,
     ):
         with nullcontext(db) if db is not None else self.connect(write=True) as db:
             self._check_file_write(
@@ -4272,7 +6187,19 @@ class Store:
                     "DELETE FROM library_reservations WHERE id=? AND owner=?",
                     (object_ref.key, owner),
                 )
-            previous = self._revision_base(db, bot_id, data.name, data.previous_file_id)
+            previous = self._revision_base(
+                db, bot_id, data.name, data.previous_file_id, delivering=bool(source_task_id)
+            )
+            if (
+                previous
+                and query_sources is None
+                and db.execute(
+                    "SELECT 1 FROM owl_query_files WHERE file_id=?", (previous["id"],)
+                ).fetchone()
+            ):
+                raise Conflict(
+                    "Revise this data result with present_table to keep its source binding."
+                )
             file_id, now = uid(), time.time()
             db.execute(
                 "INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?)",
@@ -4337,21 +6264,79 @@ class Store:
                 from .triggers import file_added
 
                 file_added(db, bot_id, file_id, data.name, now)
+            if query_sources is not None:
+                db.execute(
+                    "INSERT INTO owl_query_files VALUES(?,?)", (file_id, encode(query_sources))
+                )
             return self._file_metadata(
                 db, db.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
             )
 
+    def withdraw_task_result(self, owner, task_id, file_id):
+        with self.connect(write=True) as db:
+            task = self._task(db, owner, task_id)
+            if not self.executing(db, task):
+                raise Conflict("Only an active turn may withdraw its own output.")
+            if not self._bot(db, owner, task["bot_id"])["files_enabled"]:
+                raise Conflict("Files are turned off for this owl.")
+            file = db.execute(
+                "SELECT id,series_id,revision FROM files WHERE id=? AND bot_id=? AND source_task_id=?",
+                (file_id, task["bot_id"], task_id),
+            ).fetchone()
+            if not file:
+                raise NotFound("This active turn did not create that file revision.")
+            receipt = {
+                "file_id": file["id"],
+                "series_id": file["series_id"],
+                "revision": file["revision"],
+            }
+            if db.execute(
+                "INSERT INTO owl_withdrawn_results(file_id) VALUES(?) ON CONFLICT(file_id) DO NOTHING",
+                (file_id,),
+            ).rowcount:
+                self._event(db, task_id, "result_withdrawn", receipt)
+            return {**receipt, "withdrawn": True}
+
+    def query_file_sources(self, owner, bot_id, file_id):
+        with self.connect() as db:
+            bot = self._bot(db, owner, bot_id)
+            if not bot["files_enabled"]:
+                raise Conflict("Files are turned off for this owl.")
+            row = db.execute(
+                "SELECT q.sources FROM owl_query_files q JOIN files f ON f.id=q.file_id WHERE f.bot_id=? AND f.id=?",
+                (bot_id, file_id),
+            ).fetchone()
+            if row is None:
+                raise NotFound("Data result not found.")
+            descriptor = json.loads(row[0])
+            return descriptor["file_ids"] if isinstance(descriptor, dict) else descriptor
+
     @staticmethod
-    def _revision_base(db, bot_id, name, previous_file_id):
+    def _delivered_head(db, bot_id, series_id):
+        row = db.execute(
+            "SELECT f.id FROM files f WHERE f.bot_id=? AND f.series_id=? "
+            "AND NOT EXISTS (SELECT 1 FROM owl_withdrawn_results w WHERE w.file_id=f.id) "
+            "ORDER BY f.revision DESC LIMIT 1",
+            (bot_id, series_id),
+        ).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def _revision_base(db, bot_id, name, previous_file_id, *, delivering=False):
         current = db.execute(
             "SELECT * FROM files WHERE bot_id=? AND name=? ORDER BY revision DESC LIMIT 1",
             (bot_id, name),
         ).fetchone()
         if previous_file_id:
             if not current or current["id"] != previous_file_id:
-                raise Conflict(
-                    "This file changed or is unavailable. Read the latest version before saving."
-                )
+                if (
+                    not current
+                    or not delivering
+                    or Store._delivered_head(db, bot_id, current["series_id"]) != previous_file_id
+                ):
+                    raise Conflict(
+                        "This file changed or is unavailable. Read the latest version before saving."
+                    )
         elif current:
             raise Conflict(
                 "A file with this name already exists. Supply its latest previous_file_id to save a new version."
@@ -4405,7 +6390,63 @@ class Store:
         result = dict(row)
         result["timing"] = json.loads(result["timing"])
         result.update(Store._routine_access(db, schedule_id))
+        assignment = db.execute(
+            "SELECT r.assignment_id AS source_assignment_id,a.recipient_name,a.work_scope,"
+            "a.recipient_bot_id,a.source_task_id,child.config AS child_config "
+            "FROM owl_assignment_routines r LEFT JOIN owl_assignments a ON a.id=r.assignment_id "
+            "LEFT JOIN tasks child ON child.id=a.child_task_id WHERE r.schedule_id=?",
+            (schedule_id,),
+        ).fetchone()
+        if assignment:
+            result["assignment"] = {
+                "source_assignment_id": assignment["source_assignment_id"],
+                "recipient_name": assignment["recipient_name"] or "",
+            }
+            if assignment["work_scope"] == "computer":
+                # What each run may use: the task's card, as the person approved it.
+                access = Store._assignment_access(db, assignment["source_task_id"]) or json.loads(
+                    assignment["child_config"] or "{}"
+                ).get("assignment_access")
+                if access:
+                    result["assignment"]["access"] = access
+                    result["assignment"]["recipient_bot_id"] = assignment["recipient_bot_id"]
         return result
+
+    def _assignment_for_routine(self, db, owner, schedule) -> dict | None:
+        binding = schedule.get("assignment")
+        if binding is None:
+            return None
+        if not self._is_coordinator(db, owner, schedule["bot_id"]):
+            raise AssignmentRoutineBlocked("assignment_coordinator")
+        row = self._assignment_rows(
+            db, owner, schedule["bot_id"], assignment_id=binding["source_assignment_id"]
+        ).fetchone()
+        if row is None or row["child_status"] != "completed":
+            raise AssignmentRoutineBlocked("assignment_missing")
+        item = self._assignment_item(row)
+        try:
+            recipient = self._bot(db, owner, item["recipient_bot_id"])
+        except NotFound as exc:
+            raise AssignmentRoutineBlocked("assignment_missing") from exc
+        shared = json.loads(row["shared_files"] or "[]")
+        if shared:
+            try:
+                self._attachable_files(db, recipient, [file["id"] for file in shared])
+            except Conflict as exc:
+                raise AssignmentRoutineBlocked("assignment_missing") from exc
+        if item.get("work_scope") == "computer":
+            access = item.get("access")
+            try:
+                if not access:
+                    raise NotFound("Assignment not found.")
+                self._check_computer_access(db, recipient, access)
+            except (Conflict, NotFound) as exc:
+                raise AssignmentRoutineBlocked("assignment_missing") from exc
+            allowed = parse_needs(schedule["access"]["allowed"])
+            needs = _access_needs(access)
+            if not needs.empty and not (allowed and allowed.covers(needs)):
+                raise AssignmentRoutineBlocked("access")
+        return item
 
     @staticmethod
     def _routine_access(db: sqlite3.Connection, schedule_id: str) -> dict:
@@ -4571,6 +6612,7 @@ class Store:
         requested: bool = False,
         accepted_card: bool = False,
         within=None,
+        assignment_id: str | None = None,
     ) -> dict:
         """Save a routine. With ``accepted_card``, the person accepted it on a card the finished
         ``source_task_id`` showed (an owl's setup): it is that turn's draft, turned on as any
@@ -4608,14 +6650,15 @@ class Store:
                         return self._schedule(db, bot_id, previous["id"])
             # Without needs or a model, the payload reads as it did before routines had them, so
             # a request resent across an upgrade still matches.
-            payload = encode(
-                data.model_dump(
-                    mode="json",
-                    exclude={"request_id"}
-                    | ({"needs"} if data.needs is None else set())
-                    | ({"model"} if data.model is None else set()),
-                )
+            creation = data.model_dump(
+                mode="json",
+                exclude={"request_id"}
+                | ({"needs"} if data.needs is None else set())
+                | ({"model"} if data.model is None else set()),
             )
+            if assignment_id is not None:
+                creation["assignment_id"] = assignment_id
+            payload = encode(creation)
             if data.request_id:
                 if schedule_id or source_task_id:
                     raise Conflict("Request IDs apply only to new user-created schedules.")
@@ -4639,6 +6682,10 @@ class Store:
             )
             if schedule_id:
                 current = self._schedule(db, bot_id, schedule_id)
+                if current.get("assignment"):
+                    raise Conflict(
+                        "This routine uses an approved assignment. Create a new routine from an assignment to change its instructions."
+                    )
                 if current["revision"] != data.expected_revision:
                     raise Conflict(
                         "This schedule changed. Reopen its latest version before saving."
@@ -4708,6 +6755,11 @@ class Store:
                     ),
                 )
                 self._reset_routine_access(db, schedule_id, data.needs, now)
+                if assignment_id is not None:
+                    db.execute(
+                        "INSERT INTO owl_assignment_routines(schedule_id,assignment_id) VALUES(?,?)",
+                        (schedule_id, assignment_id),
+                    )
             if data.request_id:
                 db.execute(
                     "INSERT INTO schedule_requests VALUES(?,?,?,?)",
@@ -4760,6 +6812,15 @@ class Store:
             current = self._schedule(db, bot_id, schedule_id)
             if current["revision"] != expected_revision:
                 raise Conflict("This schedule changed. Refresh it before changing its state.")
+            if state == "active":
+                if source_task_id and current.get("assignment"):
+                    raise Conflict("Turn on this assignment routine yourself in Routines.")
+                try:
+                    self._assignment_for_routine(db, owner, current)
+                except AssignmentRoutineBlocked as exc:
+                    if exc.code != "access":
+                        raise
+                    raise Conflict("Allow what this routine uses before turning it on.") from exc
             self._set_schedule_state(db, current, state, now)
             return self._schedule(db, bot_id, schedule_id)
 
@@ -4833,6 +6894,8 @@ class Store:
         with self._joined(within) as db:
             self._bot(db, owner, bot_id)
             current = self._schedule(db, bot_id, schedule_id)
+            if current.get("assignment") and not current["assignment"].get("access"):
+                raise Conflict("This assignment routine runs on its approved text only.")
             access = current["access"]
             allowed = parse_needs(access["allowed"])
             done = access["to_allow"] is None and allowed is not None and allowed.covers(data.allow)
@@ -4851,6 +6914,8 @@ class Store:
                     (encode(data.allow.model_dump()), now, now, schedule_id),
                 )
             if data.turn_on and current["state"] != "active":
+                if current.get("assignment"):
+                    self._assignment_for_routine(db, owner, self._schedule(db, bot_id, schedule_id))
                 self._set_schedule_state(db, current, "active", now)
             return self._schedule(db, bot_id, schedule_id)
 
@@ -5024,7 +7089,7 @@ class Store:
             # The run needed something the person hasn't allowed for this routine. However the
             # turn ended, only they can allow it: the routine waits for them, saying what.
             failure = RunFailure("access")
-        if status == "completed" and need is None:
+        if status == "completed" and need is None and not (failure and failure.kind == "review"):
             db.execute("DELETE FROM schedule_health WHERE schedule_id=?", (schedule["id"],))
             return
         if status not in ("completed", "failed", "interrupted"):
@@ -5033,6 +7098,14 @@ class Store:
         failures = health["failures"] if health else 0
         if failure.kind in NEEDS_PERSON:
             reason = None
+            pause_code = failure.kind
+            if (
+                failure.kind == "review"
+                and db.execute(
+                    "SELECT 1 FROM owl_assignment_routines WHERE schedule_id=?", (schedule["id"],)
+                ).fetchone()
+            ):
+                pause_code = "assignment_review"
             if need is not None:
                 requested = parse_needs(
                     self._routine_access(db, schedule["id"])["access"]["requested"]
@@ -5053,7 +7126,7 @@ class Store:
             # A finished one-time routine has nothing left to pause; the run says what failed.
             if schedule["state"] == "active":
                 self._pause_schedule(
-                    db, schedule, failure.kind, now, failures=failures, reason=reason
+                    db, schedule, pause_code, now, failures=failures, reason=reason
                 )
             return
         if run["origin"] == "manual" or failure.kind == "interrupted":
@@ -5126,6 +7199,8 @@ class Store:
         origin: str | None = None,
     ) -> None:
         config = {key: schedule[key] for key in ("name", "prompt", "timing", "source_task_id")}
+        if schedule.get("assignment"):
+            config["assignment"] = schedule["assignment"]
         if task_id is not None:
             # The run uses what was allowed when it was queued: a change takes effect next run.
             allowed = Store._routine_access(db, schedule["id"])["access"]["allowed"]
@@ -5152,6 +7227,8 @@ class Store:
     @staticmethod
     def _routine_blocked(db: sqlite3.Connection, owner: str, schedule: dict) -> bool:
         """Runs never overlap for one owl or one routine, and wait while the queue is full."""
+        if schedule.get("assignment") and Store._active_schedule_run(db, schedule["id"]):
+            return True
         busy = db.execute(
             "SELECT 1 FROM tasks t WHERE t.bot_id=? AND "
             "(t.status IN ('queued','running','cancelling') OR "
@@ -5205,18 +7282,23 @@ class Store:
         scheduled_for: float,
         now: float,
         origin: str | None = None,
+        *,
+        assignment: dict | None = None,
     ) -> str:
-        """Queue one run of a routine in its owl's conversation; returns the task ID."""
-        chat = self._ensure_chat(db, owner, schedule["bot_id"], schedule["name"])
-        task = self._enqueue(
-            db,
-            owner,
-            chat["id"],
-            TaskInput(message=schedule["prompt"], request_id="schedule_" + uid()),
-        )
+        """Queue one routine run. Its receipt belongs to the schedule that started it."""
+        if assignment is None:
+            chat = self._ensure_chat(db, owner, schedule["bot_id"], schedule["name"])
+            task_id = self._enqueue(
+                db,
+                owner,
+                chat["id"],
+                TaskInput(message=schedule["prompt"], request_id="schedule_" + uid()),
+            )["id"]
+        else:
+            task_id = self._start_routine_assignment(db, owner, schedule, assignment, now)
         self._event(
             db,
-            task["id"],
+            task_id,
             "scheduled",
             {
                 "schedule_id": schedule["id"],
@@ -5230,7 +7312,74 @@ class Store:
                 ),
             },
         )
-        return task["id"]
+        return task_id
+
+    def _start_routine_assignment(self, db, owner, schedule, assignment, now) -> str:
+        """Record the coordinator's scheduled handoff and queue the real recipient task."""
+        chat = self._ensure_chat(db, owner, schedule["bot_id"], schedule["name"])
+        parent_id, assignment_id = uid(), uid()
+        db.execute(
+            "INSERT INTO tasks(id,chat_id,bot_id,owner,request_id,message,status,config,created_at,"
+            "updated_at,conversation_visible) VALUES(?,?,?,?,?,'','completed',?,?,?,0)",
+            (
+                parent_id,
+                chat["id"],
+                schedule["bot_id"],
+                owner,
+                "assignment_routine_" + parent_id,
+                encode(
+                    {
+                        "assignment_routine": {
+                            "schedule_id": schedule["id"],
+                            "source_task_id": assignment["source_task_id"],
+                        }
+                    }
+                ),
+                now,
+                now,
+            ),
+        )
+        recipient = self._bot(db, owner, assignment["recipient_bot_id"])
+        db.execute(
+            "INSERT INTO owl_assignments(id,source_task_id,recipient_bot_id,recipient_name,"
+            "brief,expected_result,work_scope,decision,created_at) VALUES(?,?,?,?,?,?,?,'approved',?)",
+            (
+                assignment_id,
+                parent_id,
+                recipient["id"],
+                recipient["name"],
+                assignment["brief"],
+                assignment["expected_result"],
+                assignment.get("work_scope", "text"),
+                now,
+            ),
+        )
+        access = assignment.get("access") if assignment.get("work_scope") == "computer" else None
+        prior = db.execute(
+            "SELECT inputs FROM owl_assignment_files WHERE assignment_id=?", (assignment["id"],)
+        ).fetchone()
+        if prior and (shared := json.loads(prior["inputs"])):
+            # The recurring job can use the exact revisions already delivered to this owl.
+            # It never reads the coordinator's Library again or copies a newer revision.
+            db.execute(
+                "INSERT INTO owl_assignment_files(assignment_id,inputs) VALUES(?,?)",
+                (assignment_id, prior["inputs"]),
+            )
+            if access is not None:
+                access = {
+                    **access,
+                    "file_ids": list(
+                        dict.fromkeys([*access.get("file_ids", []), *(f["id"] for f in shared)])
+                    ),
+                }
+        return self._enqueue_assignment_child(
+            db,
+            owner,
+            recipient,
+            assignment_id,
+            now,
+            access=access,
+        )
 
     def run_schedule_now(
         self,
@@ -5273,7 +7422,10 @@ class Store:
                 raise LimitReached(
                     "This workspace has used its model-call allowance, so the routine can't run now."
                 )
-            task_id = self._start_routine_run(db, owner, schedule, now, now, "manual")
+            assignment = self._assignment_for_routine(db, owner, schedule)
+            task_id = self._start_routine_run(
+                db, owner, schedule, now, now, "manual", assignment=assignment
+            )
             self._record_schedule_run(db, schedule, now, task_id, "queued", None, now, "manual")
             db.execute(
                 "INSERT INTO schedule_run_requests(bot_id,request_id,schedule_id,task_id,created_at) VALUES(?,?,?,?,?)",
@@ -5306,6 +7458,11 @@ class Store:
             ).fetchall()
             for row in due_rows:
                 schedule = self._schedule(db, row["bot_id"], row["id"])
+                try:
+                    assignment = self._assignment_for_routine(db, owner, schedule)
+                except AssignmentRoutineBlocked as exc:
+                    self._pause_schedule(db, schedule, exc.code, now)
+                    continue
                 timing = self._timing(schedule)
                 due = schedule["next_run_at"]
                 health = self._schedule_health(db, schedule)
@@ -5393,7 +7550,9 @@ class Store:
                         failures=health["failures"] if health else 0,
                     )
                 else:
-                    task_id = self._start_routine_run(db, owner, schedule, run_for, now)
+                    task_id = self._start_routine_run(
+                        db, owner, schedule, run_for, now, assignment=assignment
+                    )
                     queued += 1
                     if health and health["retry_at"] is not None:
                         # This run does the work a waiting retry would have done.
@@ -5422,6 +7581,11 @@ class Store:
         ).fetchall()
         for row in rows:
             schedule = self._schedule(db, row["bot_id"], row["id"])
+            try:
+                assignment = self._assignment_for_routine(db, owner, schedule)
+            except AssignmentRoutineBlocked as exc:
+                self._pause_schedule(db, schedule, exc.code, now)
+                continue
             health = self._schedule_health(db, schedule)
             at = health["retry_at"]
             superseded = (
@@ -5463,7 +7627,9 @@ class Store:
                         db, schedule["id"], schedule["revision"], now, failures=health["failures"]
                     )
                 continue
-            task_id = self._start_routine_run(db, owner, schedule, at, now, "retry")
+            task_id = self._start_routine_run(
+                db, owner, schedule, at, now, "retry", assignment=assignment
+            )
             self._record_schedule_run(db, schedule, at, task_id, "queued", None, now, "retry")
             # The retry is under way: keep which run it retries and how many tries it took.
             self._save_schedule_health(

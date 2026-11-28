@@ -72,8 +72,11 @@ READING = frozenset(
 OWN_RECORDS = frozenset(
     {
         "save_file",
+        "present_table",
         "create_document",
         "edit_document",
+        "create_assignment_workbook",
+        "select_assignment_outputs",
         # A picture made or changed by the image service, kept as a new Library file or version
         # (owl_images.py).
         "create_image",

@@ -112,6 +112,9 @@ DESKTOP_FEATURES: tuple[str, ...] = (
     "run.instruction-stdin",
     "run.session-resume",
     "settings.web-tools-config",
+    # `image_generation.quality` (low, medium, high, xhigh, max or auto) is the person's picture
+    # quality: applied when a request names none, never written into the model's instructions.
+    "settings.picture-quality-v1",
     "auth.models-json",
     "auth.select-model",
     "profile.list-json",

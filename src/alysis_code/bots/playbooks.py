@@ -28,6 +28,9 @@ Limits, per owl:
   few worse updates; older ones are erased. A playbook holds at most four versions.
 - One playbook per run: saving again in the same run corrects what that run wrote.
 
+The person can also teach an owl a playbook: steps they showed or told the Alysis Assistant once
+and confirmed are kept with the owl the task went to (``teach``), with no tools and no source run.
+
 Names are compared Unicode-normalized and case-folded, and without accents only when nothing
 matches exactly, so one owl never has two playbooks of the same name. Nothing here reads the
 words for meaning.
@@ -42,7 +45,7 @@ from typing import Annotated
 
 from pydantic import Field, StringConstraints
 
-from .models import Input
+from .models import Input, TaughtPlaybook
 from .store import Conflict, NotFound, Store, encode, uid
 
 MAX_PLAYBOOKS = 20
@@ -205,14 +208,56 @@ def _keep(db, held, now: float) -> str | None:
         "UPDATE playbooks SET status='current',version=?,updated_at=? WHERE id=?",
         (version, now, held["id"]),
     )
-    # Undo needs the version before; a few are kept, older ones go.
+    _prune_earlier(db, held["playbook_id"])
+    return None
+
+
+def _prune_earlier(db, playbook_id: str) -> None:
+    """Undo needs the version before; a few are kept, older ones go."""
     earlier = db.execute(
         "SELECT id FROM playbooks WHERE playbook_id=? AND status='earlier' ORDER BY version DESC",
-        (held["playbook_id"],),
+        (playbook_id,),
     ).fetchall()
     for row in earlier[MAX_EARLIER_VERSIONS:]:
         db.execute("DELETE FROM playbooks WHERE id=?", (row["id"],))
-    return None
+
+
+def teach(db, bot, steps: list[str], data: TaughtPlaybook, now: float) -> dict:
+    """Keep steps the person showed or told the Assistant as one of the owl's playbooks.
+
+    The person confirmed these steps, so they are kept at once rather than held with a run. A
+    playbook of the same name gets a new version (Undo brings the one before back). With memory
+    off, or at the limit with a new name, nothing is kept and the reason says why.
+    """
+    if not bot["memory_enabled"]:
+        return {"saved": False, "reason": "memory_off"}
+    current = _current(db, bot["id"])
+    target = same_name(data.name, current)
+    if target is None and len(current) >= MAX_PLAYBOOKS:
+        return {"saved": False, "reason": "limit"}
+    playbook_id = target["playbook_id"] if target is not None else uid()
+    version = target["version"] + 1 if target is not None else 1
+    if target is not None:
+        db.execute("UPDATE playbooks SET status='earlier' WHERE id=?", (target["id"],))
+    db.execute(
+        "INSERT INTO playbooks(id,playbook_id,bot_id,version,name,when_to_use,steps,pitfalls,"
+        "done_check,tools,source_task_id,status,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,'[]',?,'[]',NULL,'current',?,?)",
+        (
+            uid(),
+            playbook_id,
+            bot["id"],
+            version,
+            data.name,
+            data.when_to_use,
+            encode(steps[:MAX_STEPS]),
+            data.done_check,
+            now,
+            now,
+        ),
+    )
+    _prune_earlier(db, playbook_id)
+    return {"saved": True, "id": playbook_id, "name": data.name, "version": version}
 
 
 def task_playbooks(db, bot_id: str, *, only=None) -> dict[str, dict]:

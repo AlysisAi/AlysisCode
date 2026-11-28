@@ -300,13 +300,12 @@ def test_contained_command_in_review_mode_gets_the_ordinary_card(harness):
 @pytest.mark.parametrize(
     "permissions",
     [
-        {"network": True},
         {"network": True, "git_metadata": True},
         {"git_metadata": True},
         {"local_preview": True},
     ],
 )
-def test_any_granted_widening_keeps_the_person_decision(harness, permissions):
+def test_metadata_and_preview_grants_keep_the_person_decision(harness, permissions):
     # Full access cannot request scoped access, so this is "Approve for me" only.
     assert isinstance(harness.run("pytest -q", permissions=permissions), ApprovalDeclinedError)
     assert not harness.dispatched
@@ -326,7 +325,12 @@ def test_any_granted_widening_keeps_the_person_decision(harness, permissions):
     ],
 )
 @pytest.mark.parametrize("mode", ["auto", "fullaccess"])
-def test_launcher_settings_that_open_a_route_keep_the_person_decision(harness, settings, mode):
+def test_launcher_settings_route_to_the_expected_approver(harness, settings, mode):
+    if mode == "auto" and settings == replace(CLOSED, network="on"):
+        assert harness.run("pytest -q", settings=settings) is None
+        assert harness.dispatched == ["pytest -q"] and len(harness.client.calls) == 1
+        assert not harness.surface.requests
+        return
     assert isinstance(harness.run("pytest -q", mode=mode, settings=settings), ApprovalDeclinedError)
     assert not harness.dispatched
     (card,) = _person_cards(harness.surface)
@@ -504,7 +508,11 @@ def test_contained_verification_command_needs_no_person_card(verify_harness, mod
     "settings",
     [replace(CLOSED, network="on"), replace(CLOSED, preview_access="local")],
 )
-def test_verification_command_with_a_route_keeps_the_person_decision(verify_harness, settings):
+def test_verification_routes_network_to_review_and_preview_to_person(verify_harness, settings):
+    if settings.network == "on":
+        assert verify_harness.run("pytest -q", settings=settings) is None
+        assert verify_harness.ran == ["pytest -q"] and not verify_harness.surface.requests
+        return
     assert isinstance(verify_harness.run("pytest -q", settings=settings), ApprovalDeclinedError)
     assert not verify_harness.ran
     (card,) = [r for r in verify_harness.surface.requests if r.kind == "verify_run"]
@@ -684,7 +692,12 @@ def test_read_looking_git_that_can_write_or_run_programs_is_not_a_read(command):
     "settings",
     [replace(CLOSED, network="on"), replace(CLOSED, preview_access="local")],
 )
-def test_git_read_with_a_route_keeps_the_person_decision(harness, command, settings):
+def test_git_read_routes_network_to_review_and_preview_to_person(harness, command, settings):
+    if settings.network == "on":
+        assert harness.run(command, settings=settings) is None
+        assert harness.dispatched == [command] and not harness.surface.requests
+        assert len(harness.client.calls) == 1
+        return
     assert isinstance(harness.run(command, settings=settings), ApprovalDeclinedError)
     assert not harness.dispatched
 
@@ -692,6 +705,29 @@ def test_git_read_with_a_route_keeps_the_person_decision(harness, command, setti
 def test_git_read_on_a_host_runner_keeps_the_person_decision(harness):
     assert isinstance(harness.run("git status", runner=HostShellRunner()), ApprovalDeclinedError)
     assert not harness.dispatched
+
+
+def test_operation_network_download_uses_exact_access_review(harness):
+    cmd = "curl -I https://example.com"
+    assert harness.run(cmd, permissions={"network": True}, yes=False) is None
+    assert harness.dispatched == [cmd] and len(harness.client.calls) == 1
+    assert not harness.surface.requests
+
+
+def test_network_enabled_conditional_inspection_goes_to_reviewer(harness):
+    command = "if [ -f notes.txt ]; then cat notes.txt; fi"
+    assert harness.run(command, settings=replace(CLOSED, network="on"), yes=False) is None
+    assert harness.dispatched == [command] and len(harness.client.calls) == 1
+    assert not harness.surface.requests
+
+
+def test_folder_only_shell_grant_keeps_offline_review(harness, tmp_path):
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    cmd = "ls -1"
+    assert harness.run(cmd, permissions={"read_folders": [str(folder)]}, yes=False) is None
+    assert harness.dispatched == [cmd] and len(harness.client.calls) == 1
+    assert not harness.surface.requests
 
 
 @pytest.mark.parametrize(

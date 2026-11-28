@@ -7,7 +7,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .error_text import sanitize_error_text_for_output
+from .failure_category import is_provider_billing_error
+from .llm.rate_limit_metadata import provider_error_detail, requires_provider_billing
 
+_BILLING_GUIDANCE = (
+    "The model provider requires credits or an active plan for this connection. "
+    "Check the balance and subscription for the configured key, or choose another model."
+)
 _NETWORK_MODEL_SIGNALS = (
     "llm request failed",
     "llm error",
@@ -77,9 +83,9 @@ def is_network_or_model_error(text: str) -> bool:
 def friendly_llm_error_message(error: Any) -> str:
     """Return user-facing provider error text without raw exception wrappers."""
     try:
-        from .llm.openai_compat import alysis_trial_error_message
+        from .llm.openai_compat import alysis_plan_limit_message, alysis_trial_error_message
 
-        trial_message = alysis_trial_error_message(error)
+        trial_message = alysis_plan_limit_message(error) or alysis_trial_error_message(error)
     except Exception:  # noqa: BLE001
         trial_message = None
     if trial_message:
@@ -93,6 +99,13 @@ def friendly_llm_error_message(error: Any) -> str:
 
     status = _llm_error_status_code(text)
     detail = _provider_error_detail(text)
+    if is_provider_billing_error(error) or (
+        status is not None
+        and requires_provider_billing(
+            status, provider_error_detail(_json_error_payload(_llm_error_body(text)) or detail)
+        )
+    ):
+        return _BILLING_GUIDANCE
     lowered = f"{text}\n{detail}".casefold()
     url = _first_url(detail)
     url_suffix = f" See: {url}" if url else ""
@@ -139,6 +152,8 @@ def friendly_llm_error_message(error: Any) -> str:
 
 
 def classify_llm_error_display(text: str) -> LLMErrorDisplay:
+    if text == _BILLING_GUIDANCE:
+        return LLMErrorDisplay(title="Model Account", guidance_lines=())
     # Transcript integrity errors often arrive inside a generic "LLM error 400" wrapper,
     # so classify them before broader network/model guidance.
     if is_tool_transcript_error(text):

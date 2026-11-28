@@ -16,13 +16,16 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 GITHUB_PLUGIN = "alysis.github"
+
+if TYPE_CHECKING:
+    from .bots.connector_results import ConnectorResult
 
 
 class ConnectionUnavailable(Exception):
@@ -350,7 +353,7 @@ class BoundConnections:
         return self.desktop.plugins() if self.desktop is not None else []
 
     def _desktop_tools(self) -> list[Any]:
-        from .agent.tools_assembly import ToolDef
+        from .agent.tool_definition import ToolDef
         from .mcp.connector_host import connector_tool_name
 
         def refuse(_args: dict) -> dict:
@@ -388,6 +391,16 @@ class BoundConnections:
                             "desktop_connector": True,
                             "plugin_id": plugin.plugin_id,
                             "plugin_name": plugin.name,
+                            **(
+                                {"grant_revision": plugin.grant_revision}
+                                if getattr(plugin, "grant_revision", None) is not None
+                                else {}
+                            ),
+                            **(
+                                {"connection_id": plugin.connection_id}
+                                if getattr(plugin, "connection_id", None)
+                                else {}
+                            ),
                             "tool_name": tool.name,
                             # The app's own words for the tool, without the notes above that
                             # all of its tools share (an owl's tool look-up lists it by these).
@@ -401,7 +414,7 @@ class BoundConnections:
 
     def call_desktop(
         self, *, task: dict, tool: Any, arguments: dict, approval: str, token: Any = None
-    ) -> dict:
+    ) -> dict | ConnectorResult:
         """Run one desktop plugin call; the owl's approval step has already run for changes."""
         if self.desktop is None:
             raise ConnectionUnavailable("Plugins aren't available to owls in this service.")
@@ -410,6 +423,8 @@ class BoundConnections:
             bot_id=task["bot_id"],
             task_id=task["id"],
             plugin_id=meta["plugin_id"],
+            **({"grant_revision": meta["grant_revision"]} if "grant_revision" in meta else {}),
+            **({"connection_id": meta["connection_id"]} if "connection_id" in meta else {}),
             tool=meta["tool_name"],
             arguments=arguments,
             approval=approval,
@@ -419,17 +434,13 @@ class BoundConnections:
             error = ConnectionUnavailable((result.get("error") or "The plugin call failed.")[:1000])
             error.dispatched = result.get("dispatch_state") != "not_dispatched"  # type: ignore[attr-defined]
             raise error
-        return {
-            "plugin": meta["plugin_name"],
-            "tool": meta["tool_name"],
-            "is_error": bool(result.get("is_error")),
-            "result": result.get("text", ""),
-            "content_is_untrusted": True,
-        }
+        from .bots.connector_results import connector_result
+
+        return connector_result(meta["plugin_id"], meta["plugin_name"], meta["tool_name"], result)
 
     def tools(self):
         # Reuse the same executable definitions for the main agent and Bots.
-        from .agent.tools_assembly import ToolDef
+        from .agent.tool_definition import ToolDef
 
         tools = [
             ToolDef(
@@ -474,7 +485,7 @@ class BoundConnections:
                 "Plugins are connected in Alysis (Plugins in the sidebar) and work while Alysis is "
                 "open on the person's computer."
                 if self.desktop.available()
-                else "Alysis on the person's computer isn't connected, so plugins are unavailable. "
+                else "Desktop plugins are unavailable while Alysis on the person's computer is closed. "
                 "The person connects plugins from Plugins in the Alysis sidebar."
             ) + (
                 " Apps whose id starts with hub. come from More apps on the Plugins page and work "

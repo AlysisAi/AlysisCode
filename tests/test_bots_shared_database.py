@@ -53,6 +53,128 @@ def bot_task(store, owner):
     return bot, chat, task
 
 
+def test_interactive_state_and_selected_publication_across_replicas(shared):
+    from alysis_code.bots.models import ConversationPageQuery, InteractiveStateWrite
+    from alysis_code.bots.store import Conflict
+
+    first, second, owner = shared
+    bot, chat, original = bot_task(first, owner)
+    owl = bot["id"]
+    first.claim(owner)
+    file = first.save_bytes(
+        owner, owl, "Meeting.html", b"<h1>Meeting</h1>", source_task_id=original["id"]
+    )
+    first.finish(owner, original["id"], "completed")
+
+    def write(replica):
+        body = InteractiveStateWrite(
+            revision=1, sha256=file["sha256"], expected_version=0, data={"filter": "Delta"}
+        )
+        try:
+            return replica.interactive_state(owner, owl, file["id"], body)["version"]
+        except Conflict:
+            return "stale"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert set(pool.map(write, (first, second))) == {1, "stale"}
+    message = TaskInput(
+        message="Make this heading larger.",
+        request_id=uuid4().hex,
+        file_ids=[file["id"]],
+        interactive_target={
+            "file_id": file["id"],
+            "revision": 1,
+            "sha256": file["sha256"],
+            "state_version": 1,
+            "region": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.1},
+        },
+    )
+    task = first.enqueue(owner, chat["id"], message)
+    page = second.conversation_page(owner, chat["id"], ConversationPageQuery(limit=1))
+    assert page["messages"][0]["interactive_selection"] == {
+        "file_id": file["id"],
+        "revision": 1,
+        "label": "",
+    }
+    assert "interactive_target" not in page["tasks"][-1]["config"]
+    assert second.claim(owner)["id"] == task["id"]
+    assert second.interactive_revision_context(owner, task["id"])["state"] == {"filter": "Delta"}
+    next_file = second.save_bytes(
+        owner,
+        owl,
+        file["name"],
+        b"<h2>Meeting</h2>",
+        previous_file_id=file["id"],
+        source_task_id=task["id"],
+    )
+    assert first.enqueue(owner, chat["id"], message)["id"] == task["id"]
+    assert first.interactive_state(owner, owl, file["id"])["is_latest"] is False
+    assert first.interactive_state(owner, owl, next_file["id"])["version"] == 1
+    assert first.file_data(owner, owl, file["id"]) == b"<h1>Meeting</h1>"
+    assert first.file_data(owner, owl, next_file["id"]) == b"<h2>Meeting</h2>"
+    with pytest.raises(Conflict):
+        first.interactive_revision_context(owner, task["id"])
+
+
+def test_assignment_files_are_durable_across_shared_workers(shared):
+    from alysis_code.bots.models import AssignmentInput
+
+    store, other, owner = shared
+    lead, _, parent = bot_task(store, owner)
+    worker = store.save_bot(owner, BotInput(name="File reviewer"))
+    store.set_coordinator(owner, lead["id"], True)
+    assert other.claim(owner)["id"] == parent["id"]
+    source = store.save_bytes(owner, lead["id"], "Ledger.csv", b"A,12")
+    assignment = other.propose_assignment(
+        owner,
+        parent["id"],
+        AssignmentInput(
+            recipient_bot_id=worker["id"],
+            brief="Review the selected ledger.",
+            expected_result="Reviewed workbook",
+            work_scope="workbook",
+            input_file_ids=[source["id"]],
+        ),
+    )
+    other.finish(owner, parent["id"], "completed")
+
+    def approve(replica):
+        return replica.decide_assignment(
+            owner, lead["id"], assignment["id"], "approve", "workbook", [source["id"]]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.map(approve, (store, other))
+    assert first == second
+    child = other.claim(owner)
+    shared_input = store.assignment_context(owner, child["id"])["input_files"][0]
+    store.delete_item(owner, lead["id"], source["id"], kind="files")
+    assert other.assignment_input_data(owner, child["id"], shared_input["id"]) == b"A,12"
+    saved = other.save_bytes(
+        owner, worker["id"], "Reviewed.xlsx", b"exact bytes", source_task_id=child["id"]
+    )
+    store.checkpoint_assignment_result(
+        owner, child["id"], "Reviewed.", output_file_ids=[saved["id"]]
+    )
+
+    def finish(replica):
+        replica.finish(
+            owner,
+            child["id"],
+            "completed",
+            assignment_verification={"status": "met"},
+            assignment_output_file_ids=[saved["id"]],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(finish, (store, other)))
+    (returned,) = other.read_assignment(owner, lead["id"], assignment["id"])["returned_files"]
+    other.delete_item(owner, worker["id"], saved["id"], kind="files")
+    assert store.file_data(owner, lead["id"], returned["id"]) == b"exact bytes"
+    assert other.claim(owner)["config"]["assignment_return"]["returned_files"] == [returned]
+    assert store.claim(owner) is None
+
+
 def test_answer_review_preference_is_shared_and_new_tasks_capture_it(shared):
     from alysis_code.bots.models import ReplyReviewSettings
 

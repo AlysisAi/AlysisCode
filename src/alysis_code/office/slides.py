@@ -1,4 +1,4 @@
-"""Bounded PPTX authoring and selective text edits; this module does not render slides.
+"""Bounded PPTX authoring and selective text and layout edits.
 
 The common office command owns package/path validation and atomic publication. Output
 paths here must be disposable staging paths. Edits copy the original package, replacing
@@ -13,7 +13,9 @@ import math
 import re
 import unicodedata
 import warnings
+from itertools import combinations
 from pathlib import Path
+from typing import NamedTuple
 from zipfile import ZipFile
 
 from PIL import Image
@@ -27,11 +29,28 @@ from . import charts
 
 MAX_SLIDES = 50
 MAX_SHAPES = 100
+MAX_OVERLAP_EXAMPLES = 20
 MAX_TEXT = 20_000
 MAX_TOTAL_TEXT = 200_000
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 EMU_PER_INCH = 914400
+
+
+class _TextBounds(NamedTuple):
+    shape_id: int
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
+TEXT_EDITING = (
+    "whole_text_editable describes whether this tool can replace the entire text frame in one "
+    "operation. For multi-paragraph or multi-run text, select the paragraph and run to preserve "
+    "formatting. People can edit this native text directly in PowerPoint."
+)
+
 
 GUIDE = {
     "format": "pptx",
@@ -69,10 +88,16 @@ GUIDE = {
                 "shape_id": 2,
                 "expected_text_sha256": "Use text_sha256 from inspect",
                 "text": "Revised title",
-            }
+            },
+            {
+                "slide": 1,
+                "shape_id": 3,
+                "bounds": {"x": 1, "y": 2, "width": 6, "height": 2},
+            },
         ],
     },
     "locators": "slide, paragraph, run, row and column are 1-based; shape_id is the PPTX shape ID. Include both paragraph and run for precise run edits. Include both row and column for a table cell.",
+    "text_editing": TEXT_EDITING,
     "limits": {
         "slides": MAX_SLIDES,
         "shapes_per_slide": MAX_SHAPES,
@@ -83,7 +108,7 @@ GUIDE = {
         "inspection": "At most 5000 table cells, 20000 paragraph/run nodes, 8 group levels; imported tables at most 100 rows and 100 columns.",
         "images": "Local workspace PNG/JPEG only, <=20 MiB, <=25 million pixels; contain-fit preserves aspect ratio.",
         "editing": "Whole-target replacement requires one paragraph and at most one plain run. Rich text requires a paragraph/run locator. Grouped shapes, fields, merged cells and non-text shapes cannot be edited.",
-        "layout": "16:9 slides; inch geometry. Shape bounds are checked; text fit remains unverified until rendering and page-image review. Preserve margins and shorten or split dense content when needed. No full-fidelity guarantee.",
+        "layout": "New decks use a 16:9 slide. Positions and sizes use inches. Inspect reports intersecting text boxes for visual review. To move or resize an unrotated, top-level text box, edit its bounds on the inspected file. The text and formatting are preserved. Review the rendered page after a layout edit.",
     },
 }
 
@@ -429,8 +454,11 @@ def inspect(source: Path) -> dict:
     presentation = _load(source)
     slides = []
     chart_count = 0
+    overlap_count = 0
+    overlap_examples = []
     for index, slide in enumerate(presentation.slides, 1):
         shapes = []
+        text_boxes = []
         for shape in slide.shapes:
             item = {
                 "shape_id": shape.shape_id,
@@ -450,6 +478,16 @@ def inspect(source: Path) -> dict:
             }
             if shape.has_text_frame:
                 item.update(_frame_info(shape.text_frame))
+                if _is_text_box(shape) and item["text"].strip():
+                    text_boxes.append(
+                        _TextBounds(
+                            shape.shape_id,
+                            shape.left,
+                            shape.top,
+                            shape.left + shape.width,
+                            shape.top + shape.height,
+                        )
+                    )
             elif shape.has_table:
                 item["cells"] = [
                     {
@@ -474,23 +512,47 @@ def inspect(source: Path) -> dict:
             else:
                 item["unsupported_edit_reason"] = "This shape is not a supported text target"
             shapes.append(item)
+        for a, b in combinations(text_boxes, 2):
+            width = min(a.right, b.right) - max(a.left, b.left)
+            height = min(a.bottom, b.bottom) - max(a.top, b.top)
+            if width > 0 and height > 0:
+                overlap_count += 1
+                if len(overlap_examples) < MAX_OVERLAP_EXAMPLES:
+                    overlap_examples.append(
+                        {
+                            "slide": index,
+                            "shape_ids": [a.shape_id, b.shape_id],
+                            "width_inches": width / EMU_PER_INCH,
+                            "height_inches": height / EMU_PER_INCH,
+                        }
+                    )
         slides.append({"slide": index, "slide_id": slide.slide_id, "shapes": shapes})
     return {
         "format": "pptx",
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "slide_count": len(slides),
+        "text_editing": TEXT_EDITING,
         "slides": slides,
         "visual_review": "not_performed",
         "text_overflow": "not_verified",
         "geometry_check": "unrotated_shape_bounds_only",
+        "text_box_overlaps": {"count": overlap_count, "examples": overlap_examples},
         "warnings": [
             "PPTX text/layout inspection is not rendered verification; use a renderer and visual review."
         ],
     }
 
 
+def _is_text_box(shape) -> bool:
+    return (
+        shape.has_text_frame
+        and not shape.rotation
+        and shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PLACEHOLDER)
+    )
+
+
 def edit(source: Path, spec: dict, output: Path, workspace: Path) -> dict:
-    """Apply hash-guarded text replacements without saving unrelated package parts."""
+    """Edit the inspected version, preserving unrelated package members."""
     del workspace  # No asset reads or external operations during edits.
     if source.resolve() == output.resolve() or (output.exists() and source.samefile(output)):
         raise ValueError("Editing requires a new output file; the original must be preserved")
@@ -500,7 +562,7 @@ def edit(source: Path, spec: dict, output: Path, workspace: Path) -> dict:
         raise ValueError("Stale source: expected_source_sha256 does not match")
     edits = spec.get("edits")
     if not isinstance(edits, list) or not 1 <= len(edits) <= 200:
-        raise ValueError("edits must contain 1 to 200 replacements")
+        raise ValueError("edits must contain 1 to 200 changes")
     presentation = _load(source)
     changed_parts = {}
     targets = set()
@@ -516,8 +578,9 @@ def edit(source: Path, spec: dict, output: Path, workspace: Path) -> dict:
                 "run",
                 "expected_text_sha256",
                 "text",
+                "bounds",
             },
-            "text edit",
+            "slide edit",
         )
         slide_index = _integer(change.get("slide"), "slide", 1, len(presentation.slides))
         slide = presentation.slides[slide_index - 1]
@@ -525,6 +588,20 @@ def edit(source: Path, spec: dict, output: Path, workspace: Path) -> dict:
         shape = next((item for item in slide.shapes if item.shape_id == shape_id), None)
         if shape is None:
             raise ValueError("Unknown shape_id on the selected slide")
+        if "bounds" in change:
+            _keys(change, {"slide", "shape_id", "bounds"}, "layout edit")
+            if not _is_text_box(shape):
+                raise ValueError("Layout edits require an unrotated text box or text placeholder.")
+            bounds = _keys(change["bounds"], {"x", "y", "width", "height"}, "text box bounds")
+            target = (slide_index, shape_id, "bounds")
+            if target in targets:
+                raise ValueError("Only one layout edit per shape is supported")
+            targets.add(target)
+            shape.left, shape.top, shape.width, shape.height = _bounds(
+                bounds, presentation.slide_width, presentation.slide_height
+            )
+            changed_parts[str(slide.part.partname).lstrip("/")] = slide.part
+            continue
         text = _text(change.get("text"), "replacement text")
         if ("row" in change) != ("column" in change) or ("paragraph" in change) != (
             "run" in change
@@ -594,6 +671,7 @@ def edit(source: Path, spec: dict, output: Path, workspace: Path) -> dict:
     result.update(
         status="edited",
         edits_applied=len(edits),
+        edited_slides=sorted({target[0] for target in targets}),
         changed_package_parts=sorted(changed_parts),
         preservation="Unchanged ZIP member payloads copied verbatim; selected slide XML reserialized",
     )

@@ -47,18 +47,22 @@ def steer(db, owner: str, task: dict) -> tuple[str, str | None]:
     "not_steerable" (the running turn isn't the person's own request, or the message is in a room)
     or "full" (that turn has MAX_PENDING messages to read already).
     """
-    if Store._room_row(db, task["chat_id"]) is not None:
+    # A selection grants access only in its own revision turn. Folding it into a
+    # different running turn would lose the immutable file and saved-state checks.
+    if task["config"].get("interactive_target") or Store._room_row(db, task["chat_id"]) is not None:
         return QUEUED, "not_steerable"
+    _, scope = Store._scope(db, owner, task["chat_id"])
     target = db.execute(
-        f"SELECT t.id FROM tasks t WHERE {ChatScope(task['bot_id']).tasks} "
-        "AND t.status='running' AND t.id<>? LIMIT 1",
-        (task["bot_id"], task["id"]),
+        f"SELECT t.id FROM tasks t WHERE {scope.tasks} AND t.status='running' AND t.id<>? LIMIT 1",
+        (scope.value, task["id"]),
     ).fetchone()
     if target is None:
         return QUEUED, "not_working"
     try:
-        Store.direct_request(db, owner, task["bot_id"], target["id"])
+        running = Store.direct_request(db, owner, task["bot_id"], target["id"])
     except Conflict:
+        return QUEUED, "not_steerable"
+    if running["config"].get("interactive_target"):
         return QUEUED, "not_steerable"
     if len(db.execute(_PENDING_FOR, (target["id"],)).fetchall()) >= MAX_PENDING:
         return QUEUED, "full"

@@ -132,6 +132,10 @@ def recalculate(source: Path, output: Path, root: Path, **conversion_options) ->
                     raise ValueError(
                         f"Calculation returned an unsupported cache type for {name}!{reference}; output was not published."
                     )
+                if result.get("t", "n") != "str" and not (value.text or "").strip():
+                    raise ValueError(
+                        f"Calculation returned an empty result for {name}!{reference}; output was not published."
+                    )
                 for old_value in cell.findall(f"{{{NS}}}v"):
                     cell.remove(old_value)
                 cell.append(copy.deepcopy(value))

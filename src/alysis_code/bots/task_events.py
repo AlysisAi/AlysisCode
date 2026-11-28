@@ -8,11 +8,13 @@ none; a task that has ended answers at once. It is a long poll, not a stream: a 
 request/response passes every proxy, load balancer and client transport the owls API already
 goes through, and each answer is small and complete.
 
-The feed carries progress only. The owl's reply is never in it: a draft stays unpublished until
-the reply checker passes it and the turn completes, and a withheld draft is never published.
-Events that quote or judge the draft (the checker's verdicts) or travel with the reply
-(suggested next messages) come with their data withheld; a client reads the published reply,
-and what goes with it, from the conversation and the task once the task has ended.
+The feed carries progress, and the owl's draft reply while the reply checker checks it
+(``reply_draft``, below): the owner's own live view shows it, marked as being checked, and
+nothing else ever does. The draft stays unpublished until the checker passes it and the turn
+completes; a withheld draft is never published. Events that quote or judge the draft (the
+checker's verdicts) or travel with the reply (suggested next messages) come with their data
+withheld; a client reads the published reply, and what goes with it, from the conversation and
+the task once the task has ended.
 
 Waiting costs no polling: the store wakes a waiting request after each commit that wrote events
 for its task (``TaskSignals``). The wake is in-process; an event another process wrote to a
@@ -44,6 +46,32 @@ MAX_WAITERS_PER_OWNER = 32
 # Events whose data quotes or judges the owl's draft reply, or travels with the reply itself.
 REPLY_EVENTS = frozenset(
     {"reply_review_finished", "reply_review_status_accepted", "reply_suggestions"}
+)
+
+# The owl's draft reply as the reply checker starts on it (reply_review.py): data ``draft``, its
+# number in the task (1, 2, ...), and ``text``, the reply as it would be published (without its
+# suggested next messages). The text is there only while that check lasts: once the draft is
+# withdrawn (``reply_draft_withdrawn``: the checker withheld it, or the turn set it aside to take
+# in a change), replaced by a later draft, or the turn changes state (it starts again, pauses while
+# the person controls its computer, stops or ends: DRAFT_SETTLED_BY), the store removes it
+# (Store._settle_reply_drafts), and the event that did so tells a client following the turn. A
+# completed turn's reply is then the published message. So the text never outlives its check, and
+# no export, move, search or notification reads it: they read messages and outputs, never a draft.
+REPLY_DRAFT = "reply_draft"
+REPLY_DRAFT_WITHDRAWN = "reply_draft_withdrawn"
+# The changes of a task's state that settle any draft still being checked.
+DRAFT_SETTLED_BY = frozenset(
+    {
+        REPLY_DRAFT_WITHDRAWN,
+        "running",
+        "restarted",
+        "computer_control_taken",
+        "cancelling",
+        "cancelled",
+        "completed",
+        "failed",
+        "interrupted",
+    }
 )
 
 
@@ -100,7 +128,9 @@ class TaskSignals:
 
 
 def public_event(row) -> dict:
-    """An event as the feed gives it: as ``GET /v1/tasks/{id}`` lists it, without reply text."""
+    """An event as the feed gives it: as ``GET /v1/tasks/{id}`` lists it, without the data that
+    quotes, judges or travels with the reply. A draft (REPLY_DRAFT) comes as the task holds it:
+    with its text while it is checked, without once that check is settled."""
     event = {
         "seq": row["seq"],
         "task_id": row["task_id"],

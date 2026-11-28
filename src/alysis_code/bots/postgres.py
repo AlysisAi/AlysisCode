@@ -195,6 +195,9 @@ class PostgresStore(Store):
             db.execute("ALTER TABLE computer_capacity ALTER COLUMN max_active DROP NOT NULL")
             # Preserve all foreign keys and object references while upgrading
             # the legacy name-unique Library inside this write transaction.
+            db.execute(
+                "ALTER TABLE owl_assignments ADD COLUMN IF NOT EXISTS work_scope TEXT NOT NULL DEFAULT 'text'"
+            )
             db.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS series_id TEXT")
             db.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS revision INTEGER")
             db.execute("UPDATE files SET series_id=id,revision=1 WHERE series_id IS NULL")
@@ -225,6 +228,16 @@ class PostgresStore(Store):
             )
             db.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS failure TEXT")
             db.execute(
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS conversation_visible "
+                "INTEGER NOT NULL DEFAULT 1 CHECK(conversation_visible IN (0,1))"
+            )
+            if old and old[0] < 55:
+                db.execute(
+                    "UPDATE tasks SET conversation_visible=0 WHERE conversation_visible=1 "
+                    "AND id IN (SELECT child_task_id FROM owl_assignments)"
+                )
+                self._publish_existing_assistant_handoffs(db)
+            db.execute(
                 "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS restarts INTEGER NOT NULL DEFAULT 0"
             )
             db.execute("ALTER TABLE bot_action_reviews ADD COLUMN IF NOT EXISTS effect TEXT")
@@ -233,6 +246,7 @@ class PostgresStore(Store):
             db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS pinned_at DOUBLE PRECISION")
             db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS archived_at DOUBLE PRECISION")
             db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS model TEXT")
+            db.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS reasoning_effort TEXT")
             db.execute("ALTER TABLE schedules ADD COLUMN IF NOT EXISTS model TEXT")
             for part, kind in STEER_COLUMNS:
                 db.execute(f"ALTER TABLE queued_messages ADD COLUMN IF NOT EXISTS {part} {kind}")

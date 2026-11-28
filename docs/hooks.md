@@ -1,6 +1,6 @@
 # Lifecycle Hooks
 
-Lifecycle hooks let users and teams run deterministic command-based policy around Alysis sessions and tool calls.
+Lifecycle hooks let users and teams run deterministic command-based policy around Alysis Code sessions and tool calls.
 
 Hooks are separate from other extension surfaces:
 
@@ -205,7 +205,7 @@ Example hook scripts live under `docs/examples/hooks/`:
 - `secret_scanner.py`: block writes that look like secrets
 - `sample_hooks.json`: compact starter configuration
 
-Alysis also includes `alysis_code.builtin_hooks.notify_done_windows`, which can be referenced as:
+Alysis Code also includes `alysis_code.builtin_hooks.notify_done_windows`, which can be referenced as:
 
 ```json
 {

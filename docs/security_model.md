@@ -1,6 +1,6 @@
 # Security Model
 
-Alysis is a local coding agent. The host process owns policy decisions, tool registration,
+Alysis Code is a local coding agent. The host process owns policy decisions, tool registration,
 workspace binding, and session logging. Model-authored text can request tools, but host-owned
 runtime checks decide which tools exist and what inputs are accepted.
 
@@ -15,7 +15,7 @@ Treat these inputs as untrusted:
 - image/OCR/asset text
 - model responses
 
-Alysis keeps those inputs behind host-owned wrappers where possible. These wrappers reduce prompt
+Alysis Code keeps those inputs behind host-owned wrappers where possible. These wrappers reduce prompt
 confusion, but they are not a substitute for reviewing changes before running them.
 
 ## Execution Modes
@@ -111,7 +111,7 @@ See [Shell sandbox](shell_sandbox.md) for setup, image pinning, signatures, prov
 
 ## HTTP And SSRF Protection
 
-Alysis validates outbound HTTP targets used by web fetch/search helpers and MCP OAuth metadata
+Alysis Code validates outbound HTTP targets used by web fetch/search helpers and MCP OAuth metadata
 fetching before connecting.
 
 The safe HTTP guard rejects:

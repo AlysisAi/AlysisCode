@@ -345,3 +345,30 @@ def test_a_document_being_made_shows_its_file_name():
         step_started("create_document", {"name": "Έσοδα 2026.xlsx", "format": "xlsx"})["file"]
         == "Έσοδα 2026.xlsx"
     )
+
+
+def test_file_steps_keep_only_the_owning_owls_library_label(tmp_path):
+    from alysis_code.bots.models import FileInput
+    from alysis_code.bots.runtime import BotRuntime, step_started
+
+    store, bot, _ = setup(tmp_path)
+    peer = store.save_bot("alice", BotInput(name="Second Owl"))
+    saved = store.save_file("alice", bot["id"], FileInput(name="Σχέδιο 東京.txt", content="draft"))
+    runtime = BotRuntime(store, "alice", lambda _bot: None)
+    task = {"bot_id": bot["id"]}
+    args = {"file_id": saved["id"]}
+    for name in ("read_file", "inspect_document", "check_document", "edit_document"):
+        assert runtime._step_started(task, name, args) == {"name": name, "file": saved["name"]}
+        assert runtime._step_started({"bot_id": peer["id"]}, name, args) == {"name": name}
+    assert store.visible_file_name("another-owner", bot["id"], saved["id"]) is None
+    assert (
+        runtime._step_started(task, "edit_document", {**args, "name": "Revisión.txt"})["file"]
+        == "Revisión.txt"
+    )
+    for label in ("/private/report.docx", r"C:\private\report.docx", "foo\nbar.docx"):
+        assert step_started("create_document", {"name": label, "spec": {"text": "draft"}}) == {
+            "name": "create_document"
+        }
+    with store.connect(write=True) as db:
+        db.execute("UPDATE bots SET files_enabled=0 WHERE id=?", (bot["id"],))
+    assert runtime._step_started(task, "read_file", args) == {"name": "read_file"}

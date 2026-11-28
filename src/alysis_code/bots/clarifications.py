@@ -112,6 +112,18 @@ class ClarificationStore:
             source = self.store._task(db, self.owner, task["id"])
             if not self.store.executing(db, source):
                 raise Conflict("This task is no longer asking a question.")
+            if source["config"].get("managed_assistant"):
+                if not self.store._is_coordinator(db, self.owner, source["bot_id"]):
+                    raise Conflict("Turn on Alysis Assistant before asking a question.")
+                if self.store._assistant_screen_request(db, source["id"]):
+                    raise Conflict("This turn already asked for screen approval.")
+                if (
+                    self.store.has_assistant_owl_draft(db, source["id"])
+                    or db.execute(
+                        "SELECT 1 FROM owl_assignments WHERE source_task_id=?", (source["id"],)
+                    ).fetchone()
+                ):
+                    raise Conflict("This task already has an owl proposal to review.")
             self.refresh(db, source["bot_id"])
             old = db.execute(
                 "SELECT * FROM clarifications WHERE source_task_id=?", (source["id"],)

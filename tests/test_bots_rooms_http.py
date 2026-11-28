@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from alysis_code.bots.app import Settings, create_app
 from alysis_code.bots.models import BotInput
 from alysis_code.bots.reply_review import REVIEW_INSTRUCTIONS
+from alysis_code.bots.room_routing import INSTRUCTIONS as ROUTING_INSTRUCTIONS
 from alysis_code.llm.types import LLMResponse, LLMUsage
 
 
@@ -24,9 +26,19 @@ class RoomModel:
 
     def __init__(self):
         self.reads: list[list[dict]] = []
+        self.routes: list[dict] = []
 
     def chat(self, **kwargs):
         messages = kwargs["messages"]
+        if messages[0]["content"] == ROUTING_INSTRUCTIONS:
+            context = json.loads(messages[1]["content"])
+            self.routes.append(context)
+            return LLMResponse(
+                json.dumps({"member_id": context["members"][1]["id"], "confident": True}),
+                [],
+                {},
+                usage=LLMUsage(8, 5, 13),
+            )
         if messages[0]["content"] == REVIEW_INSTRUCTIONS:
             return LLMResponse(
                 '{"decision":"ready","reason":"Scripted fixture reply."}',
@@ -63,6 +75,60 @@ def wait_done(client, task_ids):
             return
         time.sleep(0.02)
     raise AssertionError(f"The room's turns didn't finish: {states}")
+
+
+def test_room_routes_by_model_and_carries_actual_file_revisions_to_the_selected_owl(tmp_path):
+    settings, app, owls, model = prepared(tmp_path)
+    first, second, outside = [o["id"] for o in owls]
+    with TestClient(app) as client:
+        client.headers["Authorization"] = "Bearer " + settings.token
+        room = client.post(
+            "/v1/rooms", json={"name": "Dispatch", "bot_ids": [first, second]}
+        ).json()
+        file = client.post(
+            f"/v1/bots/{first}/files",
+            json={"name": "delivery.csv", "content": "town,count\nVolos,7"},
+        ).json()
+        data = {
+            "message": "Ποιος μπορεί να ελέγξει το φορτίο;",
+            "request_id": "room_route_file_1",
+            "expertise": True,
+            "files": [{"bot_id": first, "file_id": file["id"]}],
+        }
+        path = f"/v1/rooms/{room['id']}/messages"
+        sent = client.post(path, json=data)
+        assert sent.status_code == 202, sent.text
+        task_id = sent.json()["tasks"][0]["id"]
+        wait_done(client, [task_id])
+        assert model.routes[0]["request"] == data["message"]
+        assert [member["id"] for member in model.routes[0]["members"]] == [first, second]
+        page = client.post(f"/v1/chats/{room['id']}/page", json={"limit": 20}).json()
+        assert page["tasks"][0]["bot_id"] == second
+        copy = page["messages"][0]["files"][0]["id"]
+        assert copy != file["id"]
+        assert (
+            client.get(f"/v1/bots/{second}/files/{copy}").json()["content"] == "town,count\nVolos,7"
+        )
+        assert any(copy in str(m.get("content")) for messages in model.reads for m in messages)
+        assert client.post(path, json=data).json()["tasks"][0]["id"] == task_id
+        assert client.post(path, json={**data, "files": []}).status_code == 409
+        assert (
+            client.post(
+                path,
+                json={
+                    **data,
+                    "request_id": "crossroom_files",
+                    "files": [{"bot_id": outside, "file_id": file["id"]}],
+                },
+            ).status_code
+            == 409
+        )
+        explicit = client.post(
+            path, json={**data, "request_id": "room_explicit_to", "to": first}
+        ).json()["tasks"][0]
+        wait_done(client, [explicit["id"]])
+        assert client.get(f"/v1/tasks/{explicit['id']}").json()["bot_id"] == first
+        assert len(model.routes) == 1
 
 
 def test_status_names_rooms_and_the_routes_check_what_they_take(tmp_path):

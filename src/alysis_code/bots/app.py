@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import json
 import os
 import platform
 import re
@@ -14,10 +15,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
-from ..cancellation import CooperativeCancellationError
+from ..cancellation import CooperativeCancellationError, EventCancellationToken
 from ..cloud_connections import (
     BoundConnections,
     ConnectionStore,
@@ -36,30 +39,42 @@ from ..provider_url import is_alysis_gateway_url
 from .about_me import AboutMeDecision, AboutMeSettings
 from .action_review import ApprovalDecision as ActionReviewDecision
 from .action_review import ReviewSettings, RuleInput, RuleRevision, RuleUpdate
+from .assignment_work import workbook_available
 from .browser import BrowserComputers
 from .browser_sign_ins import SignIns, SignOutInput
 from .clarifications import QuestionDecision
 from .computer import ComputerViews
 from .computer_control import ComputerRecovery, ControlRequest
+from .connector_results import CONNECTOR_REPLY_BYTES, CONNECTOR_RESULT_CAPABILITY
 from .desktop import DesktopComputers
 from .desktop_connectors import (
     AppNeedDecision,
     CatalogInput,
     DesktopConnectors,
     OwlApps,
+    OwlHubGrant,
     PluginChoice,
     ResultInput,
 )
 from .files import MAX_ENCODED_BYTES, BinaryFileInput, FileQuery, decode_file
+from .model_protocols import MODEL_PROTOCOLS
 from .models import (
+    INTERACTIVE_STATE_BYTES,
+    AssignmentDecision,
+    AssignmentPage,
+    AssistantAssignmentApproval,
+    AssistantInput,
+    AssistantOwlCreateInput,
     BotCreateInput,
     BotDuplicateInput,
     BotInput,
     BotOrganizeInput,
     ChatInput,
     ConversationPageQuery,
+    CoordinatorInput,
     FileInput,
     HistoryQuery,
+    InteractiveStateWrite,
     IntroInput,
     MemoryDecision,
     MemoryInput,
@@ -79,6 +94,7 @@ from .owl_models import (
     PlaceModels,
     image_input,
     model_protocol,
+    model_provider,
 )
 from .owl_move import (
     MAX_PAGE_REQUEST_BYTES,
@@ -93,6 +109,7 @@ from .owl_move import (
     require_unchanged,
 )
 from .owl_move import summary as move_summary
+from .owl_tables import OwlTables, QueryEdit, TableQuery
 from .playbooks import PlaybookUndo
 from .proposals import ActionDecision, SetupDecision
 from .queued_messages import QueuedMessageChange, QueuedMessages
@@ -102,19 +119,19 @@ from .routine_access import RoutineAccessDecision
 from .routine_suggestions import RoutineSuggestionDecision
 from .runtime import BotRuntime, RuntimeLimits
 from .scheduling import (
+    AssignmentScheduleInput,
     ScheduleDecision,
     ScheduleInput,
     ScheduleModelChoice,
     ScheduleRunNow,
     ScheduleRunsQuery,
 )
-from .store import Conflict, LimitReached, NotFound, Store
+from .store import Conflict, LimitReached, NotFound, Store, public_task
 from .task_events import TaskEventsQuery
 from .task_events import follow as follow_task
 from .transfers import FileTransfers, UploadChunk, UploadInput
 from .triggers import TriggerDecision, TriggerInput
-
-MODEL_PROTOCOLS = frozenset(("openai_compat", "anthropic_messages"))
+from .web_lookup import web_tools_available
 
 
 @dataclass(frozen=True)
@@ -207,9 +224,7 @@ class Settings:
         ):
             raise ValueError("Invalid model or explicit execution limits.")
         if self.protocol not in MODEL_PROTOCOLS:
-            raise ValueError(
-                "This prototype supports OpenAI-compatible and Anthropic message protocols."
-            )
+            raise ValueError("Unsupported model protocol for Owls.")
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -269,6 +284,7 @@ def offered_models(settings: Settings) -> Callable[[], list[ModelConnection]]:
 def create_app(
     settings: Settings,
     *,
+    more_apps=None,
     client_factory: Callable[[str], ChatClient] | None = None,
     github_reader: GitHubReader | None = None,
     computer_views: ComputerViews | None = None,
@@ -279,9 +295,14 @@ def create_app(
     task_store=None,
     work_authorizer=None,
     model_connections: Callable[[], list[ModelConnection]] | None = None,
+    account_model_key: Callable[[], str | None] | None = None,
 ) -> FastAPI:
     """``model_connections``: the models owls here may pick (owl_models.py); by default the
-    service's own model and ``settings.models``."""
+    service's own model and ``settings.models``. Managed Cloud uses its account gateway for all turns."""
+    if account_model_key is not None:
+        from .cloud_models import account_connections
+
+        model_connections = account_connections(settings, account_model_key)
     store = (
         task_store if task_store is not None else Store(settings.database, objects=object_storage)
     )
@@ -294,10 +315,8 @@ def create_app(
     connections = ConnectionStore(settings.database.parent / "connections.sqlite3")
     # The desktop app's plugins, each owl using those on for it (desktop_connectors.py).
     desktop_plugins = DesktopConnectors()
-    # Owls on this computer also use the account's More apps (owl_hub_apps.py); a hosted service
-    # has no account key of its own to call them with.
-    more_apps = None
-    if settings.service_mode == "local":
+    # The managed Cloud supplies a broker client delegated to this account and Owl.
+    if more_apps is None and settings.service_mode == "local":
         from .owl_hub_apps import OwlHubApps
 
         more_apps = OwlHubApps()
@@ -397,7 +416,7 @@ def create_app(
             timeout_s=90,
             enable_thinking=bool(connection.reasoning_effort),
             reasoning_effort=connection.reasoning_effort,
-            provider_key=connection.provider_key,
+            provider_key=model_provider(connection),
             extra_headers={
                 **connection.extra_headers,
                 **(
@@ -415,6 +434,13 @@ def create_app(
         return client
 
     def make_client(task_id: str) -> ChatClient:
+        if account_model_key is not None:
+            default = runtime.models.default()
+            if default is None:
+                raise ModelUnavailable(
+                    "No Alysis models are currently available for this Cloud Owl."
+                )
+            return model_client(task_id, default.settings)
         return model_client(task_id, settings)
 
     runtime = BotRuntime(
@@ -444,10 +470,18 @@ def create_app(
         runtime.work_authorizer = work_authorizer
 
     runtime.reply_review = ReplyReview(runtime)
+    runtime.triggers.apps = owl_apps if more_apps is not None else None
     runtime.action_review_enabled = True
-    runtime.models = PlaceModels(model_connections or offered_models(settings), model_client)
+    runtime.models = PlaceModels(
+        model_connections or offered_models(settings),
+        model_client,
+        account_scoped=account_model_key is not None,
+    )
+    runtime.place_settings = settings
     # Refused credentials then mean signing in to Alysis again, not fixing a model key.
-    runtime.model_account = is_alysis_gateway_url(settings.base_url)
+    runtime.model_account = account_model_key is not None or is_alysis_gateway_url(
+        settings.base_url
+    )
 
     cleanup_state = {"pending": False, "last_success_at": None}
 
@@ -551,6 +585,11 @@ def create_app(
     )
     runtime.computer_controls.views = computers
     app.state.store, app.state.runtime = store, runtime
+    if settings.service_mode == "local":
+        from .publications import install_account_routes
+        from .sharing_service import RemotePublications
+
+        install_account_routes(app, RemotePublications())
     transfers = FileTransfers(store, settings.owner)
     # Owls arriving from the person's other place (owl_move.py).
     moves = OwlMoves(store, settings.owner, models=runtime.models)
@@ -580,6 +619,10 @@ def create_app(
             limit = (
                 MAX_ENCODED_BYTES + 4096
                 if request.url.path.endswith("/files/binary")
+                else CONNECTOR_REPLY_BYTES
+                if re.fullmatch(r"/v1/desktop-plugins/calls/[a-f0-9]{32}", request.url.path)
+                else INTERACTIVE_STATE_BYTES + 4096
+                if request.url.path.endswith("/interactive-state")
                 else MAX_PAGE_REQUEST_BYTES
                 if page_path(request.url.path)
                 else 512000
@@ -600,6 +643,17 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_input(request, exc):
+        if request.url.path.startswith("/v1/desktop-plugins/calls/"):
+            # The default response echoes input values. A rejected visual or connector
+            # result must not surface in diagnostics (or be re-executed to recover it).
+            return JSONResponse(
+                {"detail": "Invalid connector result. Report its outcome using the same call ID."},
+                status_code=422,
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(NotFound)
     async def missing(_request, exc):
@@ -764,6 +818,10 @@ def create_app(
     def choose_bot_plugin(bot_id: str, data: PluginChoice):
         return owl_apps.choose(bot_id, data)
 
+    @app.patch("/v1/bots/{bot_id}/hub-grants/{catalog_id}")
+    def choose_owl_hub_account(bot_id: str, catalog_id: str, data: OwlHubGrant):
+        return owl_apps.set_hub_grant(bot_id, catalog_id, data)
+
     @app.patch("/v1/bots/{bot_id}/app-needs/{need_id}")
     def decide_app_need(bot_id: str, need_id: str, data: AppNeedDecision):
         result = owl_apps.decide(bot_id, need_id, data)
@@ -796,6 +854,12 @@ def create_app(
     def library_storage():
         return store.library_usage(settings.owner)
 
+    def place_model() -> str:
+        default = runtime.models.default()
+        if default is not None:
+            return default.settings.model
+        return "" if account_model_key is not None else settings.model
+
     @app.get("/v1/status")
     def status():
         from .hosted_maintenance import MaintenanceLease
@@ -821,7 +885,8 @@ def create_app(
             "computer_capacity": cloud_computers.capacity() if cloud_computers else None,
             "library_storage": store.library_usage(settings.owner),
             "state_backend": "postgresql" if store.shared else "sqlite",
-            "model": settings.model,
+            # The model owls without one of their own think with now (owl_models.py).
+            "model": place_model(),
             "max_calls": settings.max_calls,
             "usage": store.usage(settings.owner),
             "capabilities": [
@@ -832,8 +897,15 @@ def create_app(
                 "working_notes",
                 "schedules",
                 "file_event_activations",
+                *(
+                    ["gmail_event_activations", "calendar_event_activations"]
+                    if more_apps is not None
+                    else []
+                ),
                 # A message can carry file_ids: Library files the person attached to it.
                 "message_files",
+                "owl_interactive_results",
+                CONNECTOR_RESULT_CAPABILITY,
                 # PUT /v1/settings/time-zone: owls read dates and times in the person's zone.
                 "time_zone",
                 # A failed or interrupted task carries failure: {kind} (failures.py).
@@ -873,6 +945,28 @@ def create_app(
                 # An owl takes color and background: the look the person picked for its face;
                 # owls and Needs you items carry it back (bot_color, bot_background).
                 "owl_looks",
+                # One owl at this place can propose assignments to other owls.
+                "owl_assignments",
+                "owl_assignment_files",
+                "owl_assignment_routines",
+                "owl_assistant",
+                "owl_assistant_create_owl",
+                "owl_assistant_screen_requests",
+                "owl_assistant_assign_existing",
+                *(["owl_assignment_web_research"] if web_tools_available() else []),
+                *(["owl_assignment_workbook"] if workbook_available() else []),
+                # A computer task (assignment_computer.py): work_scope "computer" with access
+                # (offline_computer, online_browser, sites, apps, file_ids) on the handoff, when
+                # owls here have a computer or a browser of their own.
+                # owl_assignment_computer_routines: a finished computer task can become a
+                # routine (POST …/assignments/{id}/schedule); its schedule's assignment carries
+                # the card's access, and the person allows its computer, browser and websites
+                # for the routine (PUT …/schedules/{id}/access) before it runs.
+                *(
+                    ["owl_assignment_computer", "owl_assignment_computer_routines"]
+                    if runtime.desktop_computers or runtime.browser_computers
+                    else []
+                ),
                 # PATCH /v1/bots/{id}/organize pins an owl to the top of the list or archives it
                 # (owls carry pinned_at and archived_at; an archived owl's routines and file
                 # events rest and Needs you leaves it out), and POST /v1/bots/{id}/duplicate
@@ -885,6 +979,8 @@ def create_app(
                 # with available and unavailable); one its catalog no longer opens gives way to
                 # its connection's own model with a model_fallback event (owl_models.py).
                 "owl_models",
+                "owl_reasoning_effort",
+                *(["cloud_account_models"] if account_model_key is not None else []),
                 # An owl moves between the person's places (owl_move.py): GET /v1/bots/{id}/move
                 # and POST .../move/export read it here, /v1/owl-moves takes it in there, and
                 # POST .../move/finish deletes the original once its copy is complete.
@@ -938,6 +1034,11 @@ def create_app(
                 # a room's id is its chat's, read with /v1/chats/{id}/page and /read. Needs you
                 # items of a room's turns carry room_id and room_name.
                 "owl_rooms",
+                "owl_chat_threads",
+                "owl_reply_sections",
+                "owl_room_files",
+                "owl_room_expertise",
+                *(["owl_sharing"] if getattr(app.state, "owl_sharing", False) else []),
                 # Playbooks (playbooks.py): procedures an owl keeps after runs that worked, kept
                 # only with a checked reply. GET /v1/bots/{id}/playbooks lists them, GET
                 # .../playbooks/{id} reads one, POST .../undo takes back its latest version
@@ -945,15 +1046,32 @@ def create_app(
                 # playbook (id, name, version, current). A move carries playbook records only to
                 # a place that lists this.
                 "owl_playbooks",
+                # Steps the person taught by showing or telling a task once: POST
+                # /v1/assistant/{id}/create-owl and .../assign take steps (at most 12, in order,
+                # added numbered to the end of the brief) and playbook (name, when_to_use,
+                # done_check) to keep them with the owl; the answer then carries playbook (saved,
+                # and id, name and version, or reason memory_off or limit). The Assistant's own
+                # proposals can carry steps too.
+                "owl_taught_steps",
                 # Owls keep what the person stated in passing once their chat has been quiet a
                 # while (memory_capture.py): such memories carry captured: true in GET
                 # /v1/bots/{id}/memories and show under the reply they quote, with Undo.
                 "memory_capture",
                 # POST /v1/tasks/{id}/events: a working task's events after the last one the app
                 # has (body: after, its seq; wait, up to 10 seconds), answered as soon as there are
-                # any, so its live line and steps follow without polling. Progress only: the
-                # reply, and what quotes or travels with it, is read once the task has ended.
+                # any, so its live line and steps follow without polling. Progress, and the draft
+                # being checked (reply_drafts): the reply, and what quotes or travels with it, is
+                # read once the task has ended.
                 "live_task_events",
+                # While the reply checker checks the owl's reply, the task's events (GET
+                # /v1/tasks/{id} and the feed above) carry it as reply_draft (draft: its number,
+                # text: the reply as it would be published), to show marked as being checked. The
+                # text is there only while that check lasts: reply_draft_withdrawn (the draft is
+                # withheld or set aside; a later draft takes its place) or the turn's next state
+                # (running, restarted, cancelling, cancelled, failed, interrupted, completed) ends
+                # it, and a completed turn's reply is its published message. Nothing else (the
+                # conversation, exports, moves, search, Needs you) ever carries a draft.
+                "reply_drafts",
                 # Owls make and change pictures (owl_images.py) with steps create_image and
                 # edit_image, whose tool_started carries file (the picture's name). GET /v1/models
                 # says which models can: image_generation, the image generation their model
@@ -1017,6 +1135,14 @@ def create_app(
     def decide_about_me_suggestion(bot_id: str, suggestion_id: str, data: AboutMeDecision):
         return runtime.about_me.decide(bot_id, suggestion_id, data)
 
+    @app.get("/v1/assistant")
+    def assistant():
+        return store.assistant(settings.owner)
+
+    @app.put("/v1/assistant")
+    def update_assistant(data: AssistantInput):
+        return store.set_assistant(settings.owner, data.enabled)
+
     @app.get("/v1/bots")
     def bots():
         listed = store.list_bots(settings.owner)
@@ -1034,6 +1160,12 @@ def create_app(
             if not runtime.models.offers(data.model):
                 raise ModelUnavailable.for_choice(data.model)
 
+    def validate_effort(data: BotInput, chosen: str | None):
+        if data.reasoning_effort is None:
+            return
+        if not runtime.models.supports_effort(chosen, data.reasoning_effort):
+            raise HTTPException(422, "This reasoning effort is unavailable for the selected model.")
+
     def routine_model(bot_id: str, schedule_id: str) -> str | None:
         """The model a routine has now (null: its owl's)."""
         with store.connect() as db:
@@ -1048,12 +1180,54 @@ def create_app(
     @app.post("/v1/bots", status_code=201)
     def create_bot(data: BotCreateInput):
         offered(data)
+        validate_effort(data, data.model)
         return store.save_bot(settings.owner, data)
+
+    def computer_access_available(access) -> None:
+        """A computer task asks only for what owls here have."""
+        if access is None:
+            return
+        if access.offline_computer and not runtime.desktop_computers:
+            raise HTTPException(status_code=409, detail="Owls here have no computer of their own.")
+        if access.online_browser and not runtime.browser_computers:
+            raise HTTPException(status_code=409, detail="Owls here have no browser of their own.")
+
+    @app.post("/v1/assistant/{bot_id}/create-owl", status_code=201)
+    def approve_assistant_owl(bot_id: str, data: AssistantOwlCreateInput):
+        computer_access_available(data.access)
+        if data.start_task and not runtime.is_running:
+            raise HTTPException(
+                status_code=503,
+                detail="The task worker is unavailable. The approval could not be confirmed.",
+            )
+        result = store.approve_assistant_owl(settings.owner, bot_id, data)
+        if result["assignment"]:
+            runtime.wake()
+        return result
+
+    @app.post("/v1/assistant/{bot_id}/assign", status_code=202)
+    def approve_assistant_assignment(bot_id: str, data: AssistantAssignmentApproval):
+        computer_access_available(data.access)
+        if not runtime.is_running:
+            raise HTTPException(status_code=503, detail="The task worker is unavailable.")
+        result = store.approve_assistant_owl(settings.owner, bot_id, data)
+        runtime.wake()
+        return result
 
     @app.put("/v1/bots/{bot_id}")
     def update_bot(bot_id: str, data: BotInput):
-        if "model" in data.model_fields_set:
-            offered(data, store.bot(settings.owner, bot_id).get("model"))
+        if "model" in data.model_fields_set or data.reasoning_effort is not None:
+            current = store.bot(settings.owner, bot_id).get("model")
+            offered(data, current)
+            validate_effort(data, data.model if "model" in data.model_fields_set else current)
+            # Catalog reads may contact a provider. Check the selection again under the write
+            # lock so a concurrent model switch cannot pair it with an effort validated earlier.
+            with store.connect(write=True) as db:
+                if store._bot(db, settings.owner, bot_id)["model"] != current:
+                    raise Conflict(
+                        "The Owl's model changed while saving. Reopen settings and try again."
+                    )
+                return store.save_bot(settings.owner, data, bot_id, within=db)
         return store.save_bot(settings.owner, data, bot_id)
 
     @app.patch("/v1/bots/{bot_id}/organize")
@@ -1074,6 +1248,7 @@ def create_app(
                 raise Conflict("Stop this Owl's work before deleting it.")
             if check is not None:
                 check(db)
+        store.check_bot_deletion(settings.owner, bot_id)
         # Its computer ends with it, also one opened to watch it or kept awake between turns.
         runtime.end_computer(bot_id)
         factory = getattr(runtime.desktop_computers, "factory", None)
@@ -1146,7 +1321,9 @@ def create_app(
 
     @app.post("/v1/bots/{bot_id}/chats", status_code=201)
     def create_chat(bot_id: str, data: ChatInput):
-        return store.create_chat(settings.owner, bot_id, data.title)
+        return store.create_chat(
+            settings.owner, bot_id, data.title, thread_request_id=data.thread_request_id
+        )
 
     @app.get("/v1/chats/{chat_id}")
     def conversation(chat_id: str):
@@ -1217,13 +1394,13 @@ def create_app(
             )
         task = store.enqueue(settings.owner, chat_id, data)
         runtime.wake()
-        return task
+        return public_task(task)
 
     @app.get("/v1/tasks/{task_id}")
     def task(task_id: str):
         peer = runtime.peers.for_task(task_id)
         return {
-            **store.task(settings.owner, task_id),
+            **public_task(store.task(settings.owner, task_id)),
             "coding_job": runtime.coding.for_task(task_id),
             "peer_exchange": runtime.peers.public(peer) if peer else None,
         }
@@ -1235,7 +1412,7 @@ def create_app(
 
     @app.post("/v1/tasks/{task_id}/cancel")
     def cancel(task_id: str):
-        return runtime.cancel(task_id)
+        return public_task(runtime.cancel(task_id))
 
     @app.post("/v1/tasks/{task_id}/regenerate", status_code=202)
     def regenerate(task_id: str, data: RegenerateInput):
@@ -1247,7 +1424,7 @@ def create_app(
             )
         task = store.regenerate(settings.owner, task_id, data)
         runtime.wake()
-        return task
+        return public_task(task)
 
     queued_messages = QueuedMessages(store, settings.owner)
 
@@ -1255,7 +1432,8 @@ def create_app(
     def change_queued_message(task_id: str, data: QueuedMessageChange):
         """Change or cancel a message the person sent while it still waits for its owl, or send
         it now to the turn the owl is running (steering.py)."""
-        return queued_messages.change(task_id, data)
+        result = queued_messages.change(task_id, data)
+        return {**result, "task": public_task(result["task"])}
 
     @app.put("/v1/bots/{bot_id}/messages/{message_id}/reaction")
     def react(bot_id: str, message_id: str, data: ReactionInput):
@@ -1268,6 +1446,45 @@ def create_app(
     @app.get("/v1/bots/{bot_id}/exchanges")
     def peer_exchanges(bot_id: str):
         return runtime.peers.list(bot_id)
+
+    @app.get("/v1/bots/{bot_id}/assignments")
+    def assignments(bot_id: str):
+        return store.list_assignments(settings.owner, bot_id)
+
+    @app.get("/v1/bots/{bot_id}/assignments/{assignment_id}")
+    def assignment(bot_id: str, assignment_id: str):
+        return store.read_assignment(settings.owner, bot_id, assignment_id)
+
+    @app.post("/v1/bots/{bot_id}/assignments/page")
+    def assignment_page(bot_id: str, data: AssignmentPage):
+        return store.list_assignments(settings.owner, bot_id, before=data.before)
+
+    @app.post("/v1/bots/{bot_id}/assignments/{assignment_id}/schedule", status_code=201)
+    def schedule_assignment(bot_id: str, assignment_id: str, data: AssignmentScheduleInput):
+        return store.schedule_assignment(settings.owner, bot_id, assignment_id, data)
+
+    @app.put("/v1/bots/{bot_id}/coordinator")
+    def select_coordinator(bot_id: str, data: CoordinatorInput):
+        return store.set_coordinator(settings.owner, bot_id, data.enabled)
+
+    @app.patch("/v1/bots/{bot_id}/assignments/{assignment_id}")
+    def decide_assignment(bot_id: str, assignment_id: str, data: AssignmentDecision):
+        if data.decision == "approve" and not runtime.is_running:
+            raise HTTPException(
+                status_code=503,
+                detail="The task worker is unavailable. Your assignment is still pending.",
+            )
+        item = store.decide_assignment(
+            settings.owner,
+            bot_id,
+            assignment_id,
+            data.decision,
+            data.work_scope,
+            input_file_ids=data.input_file_ids,
+        )
+        if data.decision == "approve":
+            runtime.wake()
+        return item
 
     @app.get("/v1/bots/{bot_id}/questions")
     def questions(bot_id: str):
@@ -1580,6 +1797,39 @@ def create_app(
     def download_file(bot_id: str, file_id: str):
         payload = store.file_data(settings.owner, bot_id, file_id)
         return {"data_base64": base64.b64encode(payload).decode("ascii")}
+
+    query_slots = threading.BoundedSemaphore(2)
+
+    @app.get("/v1/bots/{bot_id}/files/{file_id}/data-result")
+    def read_data_result(bot_id: str, file_id: str):
+        store.query_file_sources(settings.owner, bot_id, file_id)
+        return json.loads(store.file_data(settings.owner, bot_id, file_id))
+
+    @app.post("/v1/bots/{bot_id}/files/{file_id}/data-result")
+    def rerun_data_result(bot_id: str, file_id: str, edit: QueryEdit):
+        source_ids = store.query_file_sources(settings.owner, bot_id, file_id)
+        if not query_slots.acquire(blocking=False):
+            raise HTTPException(429, "Other data queries are running. Try again shortly.")
+        try:
+            card = json.loads(store.file_data(settings.owner, bot_id, file_id))
+            args = TableQuery(file_ids=source_ids, sql=edit.sql, max_rows=card["max_rows"])
+            tables = OwlTables(store, settings.owner, EventCancellationToken(threading.Event()))
+            return {
+                "title": card["title"],
+                "sql": edit.sql,
+                "max_rows": args.max_rows,
+                **tables.call({"bot_id": bot_id}, args),
+            }
+        finally:
+            query_slots.release()
+
+    @app.get("/v1/bots/{bot_id}/files/{file_id}/interactive-state")
+    def read_interactive_state(bot_id: str, file_id: str):
+        return store.interactive_state(settings.owner, bot_id, file_id)
+
+    @app.patch("/v1/bots/{bot_id}/files/{file_id}/interactive-state")
+    def save_interactive_state(bot_id: str, file_id: str, data: InteractiveStateWrite):
+        return store.interactive_state(settings.owner, bot_id, file_id, data)
 
     @app.get("/v1/bots/{bot_id}/files/{file_id}")
     def read_file(bot_id: str, file_id: str):

@@ -27,7 +27,7 @@ from ..profiles import (
 
 def _usable(cfg, item) -> bool:
     """A saved model connection owls on this computer can think with."""
-    from .app import MODEL_PROTOCOLS
+    from .model_protocols import MODEL_PROTOCOLS
 
     return (
         not item.auth_provider
@@ -38,19 +38,22 @@ def _usable(cfg, item) -> bool:
 
 def _connection(cfg, profile) -> dict:
     """The service settings that reach one saved model connection, with the image generation
-    it declares: the person's own image generation settings, for a connection the image request
-    can reach (owl_images.for_connection)."""
-    from .owl_images import for_connection
+    it declares (account_images.connection_image_generation)."""
+    from ..account_images import connection_image_generation
 
+    api_key = resolve_profile_api_key(cfg, profile.name).key
+    base_url = resolve_effective_base_url(cfg=cfg, profile=profile)
     return {
-        "api_key": resolve_profile_api_key(cfg, profile.name).key,
-        "base_url": resolve_effective_base_url(cfg=cfg, profile=profile),
+        "api_key": api_key,
+        "base_url": base_url,
         "model": profile.default_model or cfg.model,
         "protocol": profile.protocol,
         "provider_key": profile.name,
         "reasoning_effort": profile.reasoning_effort,
         "extra_headers": profile.extra_headers,
-        "image_generation": for_connection(cfg.image_generation, profile.protocol),
+        "image_generation": connection_image_generation(
+            cfg.image_generation, base_url=base_url, api_key=api_key, protocol=profile.protocol
+        ),
     }
 
 
@@ -83,8 +86,9 @@ def _account_catalog(rows: list[dict] | None):
 def saved_connections(settings, *, account_catalog=None):
     """The models owls on this computer can pick: the connection the service started with (the
     default) and the person's other saved model connections that are set up, read again each
-    time, so a key removed or added in the app counts from the next turn. Image generation
-    turned on or off in the app counts from the next turn too, for the default as well.
+    time, so a key removed or added in the app counts from the next turn. The default's own
+    model, key and image generation are read again too: a new default model chosen in the app
+    is the one owls without a model of their own think with from their next turn.
 
     Each connection also offers the models its provider lists for the person (owl_models.py): a
     connection to the account gateway the account's catalog (``account_catalog``, by default
@@ -94,10 +98,10 @@ def saved_connections(settings, *, account_catalog=None):
     import hashlib
     from dataclasses import replace
 
+    from ..account_images import connection_image_generation
     from ..account_login import account_model_catalog
     from ..profile_presets import find_preset_for_profile, model_options_for_preset
     from ..provider_url import is_alysis_gateway_url
-    from .owl_images import for_connection
     from .owl_models import CachedCatalog, CatalogModel, ModelCatalog, ModelConnection
 
     read_account = account_catalog or account_model_catalog
@@ -126,8 +130,21 @@ def saved_connections(settings, *, account_catalog=None):
         profiles = list_profiles(cfg)
         own = next((item for item in profiles if item.name == default), None)
         current = replace(
-            settings, image_generation=for_connection(cfg.image_generation, settings.protocol)
+            settings,
+            image_generation=connection_image_generation(
+                cfg.image_generation,
+                base_url=settings.base_url,
+                api_key=settings.api_key,
+                protocol=settings.protocol,
+            ),
         )
+        if own is not None and _usable(cfg, own):
+            try:
+                current = replace(settings, **_connection(cfg, own))
+            except ValueError:
+                # It can't be used as saved now (for example a plain-HTTP endpoint): owls keep
+                # the connection the service started with.
+                pass
         connections = [
             ModelConnection(default, default, current, default=True, catalog=catalog(own, current))
         ]
@@ -308,6 +325,13 @@ async def _serve(announce) -> None:
         cloud_computers=factory,
         model_connections=saved_connections(settings),
     )
+    # Until its computer is ready, the app says where its setup stands in this service's folder;
+    # an owl without one reads it at each turn (computer_readiness.py).
+    from functools import partial
+
+    from .computer_readiness import SETUP_FILE, read_setup
+
+    app.state.runtime.computer_setup = partial(read_setup, settings.database.parent / SETUP_FILE)
     server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, lifespan="on"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:

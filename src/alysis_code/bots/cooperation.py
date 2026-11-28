@@ -130,6 +130,8 @@ class PeerStore:
                 return self.public(item)
             self.store.direct_request(db, self.owner, source["bot_id"], source["id"])
             recipient = self.store._bot(db, self.owner, request.recipient_bot_id)
+            if recipient.get("managed_assistant"):
+                raise Conflict("Choose one of your other owls for this review.")
             if recipient["id"] == source["bot_id"]:
                 raise Conflict("Choose a different peer bot.")
             if call_limit is not None and source["calls"] + 2 > call_limit:

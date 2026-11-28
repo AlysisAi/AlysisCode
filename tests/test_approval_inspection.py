@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,43 @@ def allow():
             }
         ),
         tool_calls=[],
+    )
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_command_reviewer_can_request_project_evidence_in_its_json_response(
+    tmp_path, monkeypatch, changed
+):
+    project = tmp_path / "web"
+    project.mkdir()
+    manifest = project / "package.json"
+    manifest.write_text('{"scripts":{"test":"vitest run"}}')
+    request = replace(_request("npm test"), metadata={"cwd": str(project)})
+    inspection = SimpleNamespace(
+        content='{"decision":"inspect","path":"web/package.json"}', tool_calls=[]
+    )
+
+    def worker_read(self, tool, args, *, timeout_s):
+        assert tool == "fs_read" and args["path"] == "web/package.json"
+        return {"content": manifest.read_text()}
+
+    monkeypatch.setattr("alysis_code.contained_read_tools.ContainedReadTools.run", worker_read)
+
+    def decide():
+        messages = client.calls[-1]["messages"]
+        assert json.loads(messages[1]["content"])["action"]["cwd"] == str(project)
+        assert "vitest run" in messages[-1]["content"]
+        if changed:
+            manifest.write_text('{"scripts":{"test":"different-script"}}')
+        return allow()
+
+    # The model supplies a verdict only after it has received the file evidence.
+    reviewer, client, store = reviewer_fixture(tmp_path, [inspection, decide])
+    verdict = reviewer.review(request, workspace_root=tmp_path)
+    assert verdict.outcome == ("ask_person" if changed else "allow")
+    assert len(client.calls) == 2
+    assert (
+        sum(event["type"] == "approval_review_inspection" for event in store.events_snapshot()) == 1
     )
 
 

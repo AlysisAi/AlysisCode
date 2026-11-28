@@ -488,23 +488,25 @@ def test_real_scheduler_thread_runs_without_any_desktop_and_uses_notes(setup):
 def test_scheduler_keeps_ticking_while_provider_is_busy(setup, same_bot, monkeypatch):
     store, bot = setup
     release = threading.Event()
-    entered = threading.Event()
+    entered = threading.Semaphore(0)  # one release per provider call that began
 
     class BlockingFixture:
         model = "blocking-test-fixture"
         supports_tool_calling = True
 
         def chat(self, **kwargs):
-            entered.set()
+            entered.release()
             assert release.wait(timeout=5)
             return LLMResponse("Done", [], {})
 
     chat = store.create_chat("alice", bot, "Long task")
-    store.enqueue("alice", chat["id"], TaskInput(message="Work", request_id="blocking_request"))
+    first = store.enqueue(
+        "alice", chat["id"], TaskInput(message="Work", request_id="blocking_request")
+    )
     rt = BotRuntime(store, "alice", lambda _: BlockingFixture())
     rt.start()
     try:
-        assert entered.wait(timeout=2)
+        assert entered.acquire(timeout=2)
         target = (
             bot
             if same_bot
@@ -519,19 +521,26 @@ def test_scheduler_keeps_ticking_while_provider_is_busy(setup, same_bot, monkeyp
         original = store.enqueue_due_schedules
 
         def observe_tick(*args, **kwargs):
+            # A tick that began at or after the due time has considered the routine.
+            began = time.time()
             result = original(*args, **kwargs)
-            if time.time() >= s["next_run_at"]:
+            if began >= s["next_run_at"]:
                 due_tick.set()
             return result
 
         monkeypatch.setattr(store, "enqueue_due_schedules", observe_tick)
         assert due_tick.wait(3)
-        runs = store.schedule_runs("alice", target, s["id"])["runs"]
         if same_bot:
-            assert runs == []
+            # The busy owl's own routine waits for it: nothing queued, its time kept.
+            assert store.schedule_runs("alice", target, s["id"])["runs"] == []
             assert store.list_schedules("alice", target)[0]["next_run_at"] == s["next_run_at"]
         else:
-            assert len(runs) == 1 and runs[0]["current_status"] == "queued"
+            # Another owl's routine is queued once and a free worker starts it while the
+            # first owl's provider call is still held.
+            assert entered.acquire(timeout=5)
+            runs = store.schedule_runs("alice", target, s["id"])["runs"]
+            assert len(runs) == 1 and runs[0]["current_status"] == "running"
+            assert store.task("alice", first["id"])["status"] == "running"
         release.set()
         wait_for(lambda: bool(store.schedule_runs("alice", target, s["id"])["runs"]))
         task_id = store.schedule_runs("alice", target, s["id"])["runs"][0]["task_id"]

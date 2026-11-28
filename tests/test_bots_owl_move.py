@@ -203,10 +203,10 @@ def make_owl(store):
     return owl, chat["id"]
 
 
-def export_all(store, owl):
+def export_all(store, owl, *, threads=False):
     pages, cursor = [], None
     while True:
-        page = export_page(store, OWNER, owl, MoveExport(cursor=cursor))
+        page = export_page(store, OWNER, owl, MoveExport(cursor=cursor, threads=threads))
         pages.append(page)
         cursor = page["cursor"]
         if cursor is None:
@@ -275,6 +275,34 @@ def move(source, target, owl, request_id="move-request-0001"):
         OWNER, owl, check=lambda db: require_unchanged(db, owl, pages[0]["fingerprint"])
     )
     return done, pages
+
+
+def test_move_keeps_separate_conversations_including_empty_threads(places):
+    source, target = places
+    owl = source.save_bot(OWNER, BotInput(name="Scout"))["id"]
+    default = source.create_chat(OWNER, owl, "Main")
+    other = source.create_chat(OWNER, owl, "Field notes", thread_request_id="field_notes")
+    source.create_chat(OWNER, owl, "Empty", thread_request_id="empty_thread")
+    turn(source, default["id"], "Main question", "main_question", reply="Main answer")
+    turn(source, other["id"], "Field question", "field_question", reply="Field answer")
+    with pytest.raises(Conflict, match="Update both places"):
+        export_all(source, owl)
+    pages = export_all(source, owl, threads=True)
+    moves = OwlMoves(target, OWNER)
+    transfer = moves.begin(MoveBegin(request_id="transfer_threads", source_bot_id=owl))
+    send_pages(moves, transfer["id"], pages)
+    moved = moves.complete(transfer["id"])["owl"]["id"]
+    chats = target.list_chats(OWNER, moved)
+    threads = {c["title"]: target.conversation(OWNER, c["id"]) for c in chats}
+    assert [m["content"] for m in threads["Field notes"]["messages"]] == [
+        "Field question",
+        "Field answer",
+    ]
+    assert threads["Empty"]["messages"] == []
+    assert [m["content"] for m in target.conversation(OWNER, chats[0]["id"])["messages"]] == [
+        "Main question",
+        "Main answer",
+    ]
 
 
 def test_an_owl_moves_with_everything_that_makes_it_that_owl(places):

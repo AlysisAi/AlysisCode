@@ -6,12 +6,55 @@ import pytest
 from bots_task_state import task_state
 from test_bots_memory_changes import case as shared_case
 
+from alysis_code.bots.delivery_series import previous_delivery
 from alysis_code.bots.files import FileCursor, FileQuery
-from alysis_code.bots.models import BotInput, FileInput
+from alysis_code.bots.models import BotInput, FileInput, TaskInput
 from alysis_code.bots.runtime import BotRuntime
-from alysis_code.bots.store import NotFound
+from alysis_code.bots.store import Conflict, NotFound
 
 case = shared_case
+
+
+def test_same_chat_deliveries_require_an_explicit_target_or_new_series(case):
+    store, owner, bot, first = case
+    runtime = BotRuntime(store, owner, lambda _: None)
+
+    def save(task, name, **choice):
+        return runtime._tool(
+            task, "save_file", {"name": name, "content": name, **choice}, ["save_file"]
+        )
+
+    source = store.save_file(owner, bot["id"], FileInput(name="Uploaded.html", content="input"))
+    original = save(first, "Riepilogo.html")
+    store.finish(owner, first["id"], "completed", content="Delivered.")
+    separate = store.create_chat(owner, bot["id"], "別の話", thread_request_id="separate")
+    store.enqueue(owner, separate["id"], TaskInput(message="A report", request_id="separate-turn"))
+    other = store.claim(owner)
+    assert previous_delivery(store, owner, other) == []
+    unrelated = save(other, "Other.html")
+    store.finish(owner, other["id"], "completed", content="Delivered separately.")
+    store.enqueue(owner, first["chat_id"], TaskInput(message="Aggiorna", request_id="follow-up"))
+    followup = store.claim(owner)
+    [target] = previous_delivery(store, owner, followup)
+    assert target["previous_file_id"] == original["id"]
+    assert target["series_id"] == original["series_id"] and target["revision"] == 1
+    context = task_state(runtime._context(followup))
+    targets = context.split("Previously delivered in this chat", 1)[1].split(
+        "Recent Library page", 1
+    )[0]
+    assert (
+        original["id"] in targets and source["id"] not in targets and unrelated["id"] not in targets
+    )
+    with pytest.raises(Conflict, match=original["id"]):
+        save(followup, "Corretto.html")
+    revised = save(followup, "Riepilogo.html", previous_file_id=original["id"])
+    assert revised["series_id"] == original["series_id"] and revised["revision"] == 2
+    with pytest.raises(Conflict, match="latest"):
+        save(followup, "Riepilogo.html", previous_file_id=original["id"])
+    with pytest.raises(Conflict, match="not both"):
+        save(followup, "Riepilogo.html", previous_file_id=revised["id"], new_series=True)
+    distinct = save(followup, "Alternativa.html", new_series=True)
+    assert distinct["revision"] == 1 and distinct["series_id"] != original["series_id"]
 
 
 def test_large_library_pages_survive_deleted_cursor_and_preserve_payloads(case):

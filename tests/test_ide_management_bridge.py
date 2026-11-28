@@ -58,3 +58,32 @@ def test_management_role_serves_workspace_skills_and_keeps_session_operations_ou
         "inline_secret_rejected",
     ]
     assert replies[9]["ok"] is True
+
+
+def test_management_role_finds_the_assistant_model_without_a_new_engine(tmp_path, monkeypatch):
+    # The Assistant asks for its model before each ask; the settings process answers it, and
+    # its model calls stay with an engine of their own.
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALYSIS_DATA_DIR", str(tmp_path / "data"))
+    frames = [
+        ("getCapabilities", {}),
+        ("assistant.observation.models", {}),
+        ("assistant.observation.models", {"route": "example"}),
+        ("assistant.observation.infer", {}),
+    ]
+    reader = io.StringIO(
+        "".join(
+            json.dumps({"id": i, "protocol_version": "1", "method": m, "params": p}) + "\n"
+            for i, (m, p) in enumerate(frames)
+        )
+    )
+    out = io.StringIO()
+    assert ManagementBridge(reader, out).run() == 0
+    replies = [json.loads(line) for line in out.getvalue().splitlines()]
+    methods = replies[0]["result"]["methods"]
+    assert "assistant.observation.models" in methods
+    assert "assistant.observation.infer" not in methods
+    found = replies[1]["result"]
+    assert isinstance(found["models"], list) and found["quickLook"] is True
+    assert {"activeModel", "modelStatus"} <= set(found)
+    assert [r["error"]["code"] for r in replies[2:]] == ["invalid_params", "method_not_found"]

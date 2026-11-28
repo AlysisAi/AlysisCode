@@ -74,7 +74,7 @@ from .provider_limits import (
     mark_provider_call_non_retryable,
     run_provider_limited_call,
 )
-from .rate_limit_metadata import HARD_QUOTA_CODES
+from .rate_limit_metadata import HARD_QUOTA_CODES, provider_error_detail
 from .request_plan import LLMRequestPlan, RequestCachePlan, WireRequestDiagnostics
 from .request_shape import build_request_shape_report
 from .streaming import (
@@ -1503,9 +1503,7 @@ def _responses_stream_error(data: dict[str, Any], event_type: str) -> LLMError:
     """
     response = data.get("response")
     container = response if isinstance(response, dict) else data
-    detail = container.get("error")
-    detail = detail if isinstance(detail, dict) else container
-    code = provider_error_code(detail)
+    detail = provider_error_detail(container)
     status = next(
         (
             value
@@ -1514,6 +1512,7 @@ def _responses_stream_error(data: dict[str, Any], event_type: str) -> LLMError:
         ),
         None,
     )
+    code = provider_error_code(detail, status=status)
     if status is None:
         status = {
             "rate_limit_exceeded": 429,
@@ -2354,7 +2353,7 @@ class OpenAIResponsesClient:
                     sanitize_error_text_for_output(f"LLM error {response.status_code}: {body}")
                 ),
                 status=response.status_code,
-                detail={},
+                detail=provider_error_detail(body),
                 headers=response.headers,
             )
         error_message = _extract_error_message(data)
@@ -2366,12 +2365,10 @@ class OpenAIResponsesClient:
         error = LLMError(
             sanitize_error_text_for_output(f"LLM error {response.status_code}: {error_text}")
         )
-        detail = data.get("error") if isinstance(data, dict) else None
-        detail = detail if isinstance(detail, dict) else {}
         apply_provider_error_metadata(
             error,
             status=response.status_code,
-            detail=detail,
+            detail=provider_error_detail(data),
             headers=response.headers,
         )
         if error.provider_error_code in HARD_QUOTA_CODES:

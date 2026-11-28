@@ -188,6 +188,12 @@ class ScheduleModelChoice(Input):
     expected_revision: int = Field(ge=1)
 
 
+class AssignmentScheduleInput(Input):
+    name: str = Field(min_length=1, max_length=80)
+    timing: Timing
+    request_id: str = Field(min_length=8, max_length=100)
+
+
 class DelayTiming(Input):
     kind: Literal["after"]
     delay_seconds: int = Field(
@@ -393,6 +399,9 @@ FAILED_RUNS_BEFORE_PAUSE = 3
 # Why a routine paused and what the person can do. The app shows its own translation
 # of each code; this text is for older apps and for the owl reading its routines.
 PAUSE_REASONS = {
+    "assignment_coordinator": "Choose this owl as coordinator again, then turn this routine back on.",
+    "assignment_missing": "The original assignment or its owl is unavailable. Approve a new assignment to set up a replacement routine.",
+    "assignment_review": "A result needs review. Open Owl assignments before turning this routine back on.",
     "sign_in": "The model service didn't accept this owl's sign-in. Sign in again or check the model connection, then turn this routine back on.",
     "setting": "The model service refused the run because of a setting or permission. Check the owl's model and connection settings, then turn this routine back on.",
     "review": "A run stopped before it could confirm an action. Check what it did in the chat, then turn this routine back on.",

@@ -8,11 +8,13 @@ import threading
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from PIL import Image
 from pydantic import ValidationError
 
 from alysis_code.bots import owl_tables, owl_toolset, step_effects
+from alysis_code.bots.app import Settings, create_app
 from alysis_code.bots.models import BotInput, FileInput, TaskInput
 from alysis_code.bots.owl_tables import TABLE_TOOL, OwlTables, TableQuery, simple_name
 from alysis_code.bots.runtime import BotRuntime, tool_schema
@@ -20,6 +22,85 @@ from alysis_code.bots.store import Conflict, Store
 from alysis_code.cancellation import CooperativeCancellationError, EventCancellationToken
 
 TOOLS = [TABLE_TOOL]
+
+
+def test_presented_query_reopens_and_reruns_only_against_recorded_owl_sources(tmp_path):
+    settings = Settings(
+        tmp_path / "api.db", "t" * 40, "fixture", "https://example.invalid", "fixture"
+    )
+    app = create_app(settings)
+    store, owner = app.state.store, settings.owner
+    bot = store.save_bot(owner, BotInput(name="Data"))["id"]
+    other = store.save_bot(owner, BotInput(name="Other"))["id"]
+    chat = store.create_chat(owner, bot, "Figures")
+    store.enqueue(owner, chat["id"], TaskInput(message="Compare sales", request_id="sales-review"))
+    task = store.claim(owner)
+    source = store.save_file(
+        owner, bot, FileInput(name="Sales.csv", content="site,qty\nNorth,4\nSouth,7")
+    )
+    args = {
+        "title": "Sales by site",
+        "file_ids": [source["id"]],
+        "sql": "SELECT site,qty FROM sales ORDER BY qty",
+    }
+    runtime = BotRuntime(store, owner, lambda _: None)
+
+    def present():
+        return runtime._tool(
+            task,
+            "present_table",
+            args,
+            ["present_table"],
+            image_input=False,
+            token=runtime.task_token(task["id"]),
+        )
+
+    saved = present()
+    assert present()["id"] == saved["id"]
+    assert store.file(owner, bot, saved["id"])["query_result"] is True
+    with pytest.raises(Conflict, match="source binding"):
+        store.save_file(
+            owner, bot, FileInput(name=saved["name"], content="{}", previous_file_id=saved["id"])
+        )
+    with TestClient(app, raise_server_exceptions=True) as client:
+        path = f"/v1/bots/{bot}/files/{saved['id']}/data-result"
+        assert client.get(path).status_code == 401
+        client.headers["Authorization"] = "Bearer " + settings.token
+        assert client.get(path).json()["rows"] == [["North", 4], ["South", 7]]
+        assert client.post(path, json={"sql": "SELECT SUM(qty) AS units FROM sales"}).json()[
+            "rows"
+        ] == [[11]]
+        assert client.get(path).json()["sql"] == args["sql"]
+        args.update(
+            previous_file_id=saved["id"],
+            title="Updated sales by site",
+            sql="SELECT site, qty FROM sales ORDER BY qty DESC",
+        )
+        corrected = present()
+        assert corrected["name"] == saved["name"]
+        assert corrected["series_id"] == saved["series_id"]
+        assert corrected["revision"] == 2
+        assert store.file(owner, bot, saved["id"])["query_title"] == "Sales by site"
+        assert store.file(owner, bot, corrected["id"])["query_title"] == "Updated sales by site"
+        assert present()["id"] == corrected["id"]
+        corrected_path = path.replace(saved["id"], corrected["id"])
+        assert client.get(corrected_path).json()["rows"] == [["South", 7], ["North", 4]]
+        assert client.get(path).json()["rows"] == [["North", 4], ["South", 7]]
+        args.update(sql="SELECT qty FROM sales")
+        with pytest.raises(Conflict):
+            present()
+        args.update(previous_file_id=source["id"])
+        with pytest.raises(Conflict, match="Only a saved data result"):
+            present()
+        assert (
+            client.post(path, json={"sql": args["sql"], "file_ids": [source["id"]]}).status_code
+            == 422
+        )
+        assert client.get(path.replace(bot, other)).status_code == 404
+        fake = store.save_file(owner, bot, FileInput(name="fake.owlquery.json", content="{}"))
+        assert client.get(path.replace(saved["id"], fake["id"])).status_code == 404
+        store.delete_item(owner, bot, source["id"], kind="files")
+        assert client.post(path, json={"sql": args["sql"]}).status_code == 404
 
 
 def owl(tmp_path, *, files_enabled=True):
@@ -45,6 +126,74 @@ def query(runtime, task, file_ids, sql, **extra):
 
 def text_file(store, bot, name, content):
     return store.save_file("owner", bot["id"], FileInput(name=name, content=content))
+
+
+def test_saved_query_revision_shows_executed_rows_and_distinguishes_a_retitle(tmp_path):
+    store, bot, task = owl(tmp_path)
+    runtime = BotRuntime(store, "owner", lambda _: None)
+    row = "Ginestra,5"
+    source = text_file(store, bot, "Staff.csv", "site,units\n" + row)
+    args = {"title": "Initial", "sql": "SELECT site,units FROM staff", "file_ids": [source["id"]]}
+
+    def present(**changes):
+        return runtime._tool(task, "present_table", {**args, **changes}, ["present_table"])
+
+    first = present()
+    assert first["executed_sample"] == {"columns": ["site", "units"], "rows": [["Ginestra", 5]]}
+    with pytest.raises(Conflict, match="same rows") as unchanged:
+        present(title="Ginestra 10", previous_file_id=first["id"])
+    assert '"Ginestra",5' in str(unchanged.value)
+    assert store.file("owner", bot["id"], first["id"])["is_latest"]
+    retitled = present(title="Stato iniziale", previous_file_id=first["id"], keep_rows=True)
+    assert retitled["revision"] == 2 and retitled["executed_sample"] == first["executed_sample"]
+    changed_source = store.save_file(
+        "owner",
+        bot["id"],
+        FileInput(
+            name="Staff.csv",
+            content="site,units\n" + row + "\nTorino,2",
+            previous_file_id=source["id"],
+        ),
+    )
+    maintained = present(
+        previous_file_id=retitled["id"],
+        file_ids=[changed_source["id"]],
+        sql="SELECT site,units FROM staff WHERE site='Ginestra'",
+    )
+    assert maintained["revision"] == 3 and maintained["executed_sample"] == first["executed_sample"]
+
+
+def test_visible_query_can_be_revised_past_a_withdrawn_successor_without_rebinding_its_sources(
+    tmp_path,
+):
+    store, bot, task = owl(tmp_path)
+    source = text_file(store, bot, "Units.csv", "site,units\nNorth,3\nSouth,5")
+    runtime = BotRuntime(store, "owner", lambda _: None)
+
+    def present(sql, previous=None):
+        return runtime._tool(
+            task,
+            "present_table",
+            {
+                "title": "Units",
+                "sql": sql,
+                "file_ids": [source["id"]],
+                "previous_file_id": previous,
+            },
+            ["present_table"],
+        )
+
+    first = present("SELECT site,units FROM units ORDER BY site")
+    second = present("SELECT site,units FROM units WHERE units>3", first["id"])
+    store.withdraw_task_result("owner", task["id"], second["id"])
+    statement = "SELECT SUM(units) AS total FROM units"
+    corrected = present(statement, first["id"])
+    assert corrected["series_id"] == first["series_id"] and corrected["revision"] == 3
+    assert corrected["executed_sample"]["rows"] == [[8]]
+    assert present(statement, first["id"])["id"] == corrected["id"]
+    assert store.query_file_sources("owner", bot["id"], second["id"]) == [source["id"]]
+    with pytest.raises(Conflict):
+        present("SELECT COUNT(*) FROM units", first["id"])
 
 
 def workbook(sheets: dict[str, list[list]]) -> bytes:

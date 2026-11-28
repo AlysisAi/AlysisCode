@@ -47,7 +47,7 @@ from .owl_documents import DOCUMENT_TOOLS
 from .owl_images import IMAGE_TOOLS
 from .owl_models import context_window
 from .owl_tables import TABLE_TOOLS
-from .owl_tools import ROOM_TURN_LEFT_OUT, ROUTINE_TOOLS
+from .owl_tools import MANAGED_ASSISTANT_TOOLS, ROOM_TURN_LEFT_OUT, ROUTINE_TOOLS
 from .research_helpers import RESEARCH_TOOL
 from .step_effects import NOTHING_TO_REPORT
 from .store import NotFound, encode
@@ -231,6 +231,14 @@ class Turn:
     # only a checked run can keep one it writes.
     playbooks: bool = False
     reply_checked: bool = False
+    # The owl coordinates the person's other owls (Store.is_coordinator), and is the built-in
+    # Alysis Assistant (assistant_profile.py), which only plans and hands work to owls. A turn
+    # carrying on once an app is ready (``app_ready``) proposes nothing new.
+    coordinator: bool = False
+    managed_assistant: bool = False
+    app_ready: bool = False
+    # The desktop can ask the person to approve one screenshot for this turn.
+    screen_requests: bool = False
 
 
 def tool_names(turn: Turn) -> list[str]:
@@ -267,6 +275,18 @@ def tool_names(turn: Turn) -> list[str]:
         # Only the person's own message can state a fact about them.
         if turn.about_me and not turn.first_hello and not turn.skipped_question:
             names.append("suggest_about_me")
+        # The coordinator proposes work for other owls; the person approves each assignment.
+        if (
+            turn.coordinator
+            and not turn.first_hello
+            and not turn.skipped_question
+            and not turn.app_ready
+        ):
+            names += ["propose_owl_assignment", "read_owl_assignments"]
+            if turn.managed_assistant:
+                names.append("propose_new_owl")
+                if turn.screen_requests:
+                    names.append("request_screen_context")
     if turn.answers_person and (turn.own_message or turn.checking_back):
         names.append("check_back")
     if turn.room:
@@ -287,6 +307,9 @@ def tool_names(turn: Turn) -> list[str]:
         # A first hello does no job to write down, and a room leaves it to the owl's own chat.
         if turn.reply_checked and not turn.first_hello and not turn.room:
             names.append("save_playbook")
+    elif turn.managed_assistant:
+        # The Assistant keeps working notes for the work it plans, without personal memory.
+        names += ["read_working_note", "search_working_notes", "save_working_note"]
     if turn.activation:
         names = [name for name in names if name in ACTIVATION_REVIEW_TOOLS]
     if turn.scheduled:
@@ -296,6 +319,8 @@ def tool_names(turn: Turn) -> list[str]:
         names.append(NOTHING_TO_REPORT)
     if turn.background:
         names = [name for name in names if name not in NOT_IN_BACKGROUND]
+    if turn.managed_assistant:
+        names = [name for name in names if name in MANAGED_ASSISTANT_TOOLS]
     return names
 
 

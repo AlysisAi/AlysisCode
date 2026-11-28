@@ -180,7 +180,7 @@ def test_small_hosted_context_uses_discovery_without_disabling_registered_tools(
     assert model_visible(tools["fs_read"]) and model_visible(tools["shell_run"])
     search = tools["tool_search"]
     first = search.run({"names": ["optional_operation_0"]})
-    assert first["tools"][0]["function"]["name"] == "optional_operation_0"
+    assert first["tools"][0]["name"] == "optional_operation_0"
     assert model_visible(tools["optional_operation_0"])
     search.run({"names": ["optional_operation_1"]})
     assert not model_visible(tools["optional_operation_0"])

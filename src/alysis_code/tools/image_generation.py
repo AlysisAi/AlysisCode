@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..branding import env_get
-from ..config import AppConfig
+from ..config import IMAGE_QUALITIES, AppConfig, ImageGenerationConfig
 from ..error_text import sanitize_error_summary
 from ..host_file_handles import guard_host_mutation, mkdir_host_path, rename_host_file_no_replace
 from ..profiles import get_active_profile, resolve_effective_base_url
@@ -28,7 +28,6 @@ _OUTPUT_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 # The sizes the image request takes: square, landscape and portrait, or the provider's choice.
 SIZES = ("auto", "1024x1024", "1536x1024", "1024x1536")
 _SIZES = frozenset(SIZES)
-_QUALITIES = frozenset({"auto", "low", "medium", "high"})
 _BACKGROUNDS = frozenset({"auto", "opaque", "transparent"})
 # Source pictures an edit request can send, by the format their bytes decode as.
 _SOURCE_FORMATS = {
@@ -124,7 +123,7 @@ def generate_images(
     output_path: str,
     count: int = 1,
     size: str = "auto",
-    quality: str = "auto",
+    quality: str | None = None,
     background: str = "auto",
     timeout_s: float | None = None,
     transport: httpx.BaseTransport | None = None,
@@ -136,8 +135,10 @@ def generate_images(
 
     ``connection``: the model connection whose endpoint and key the request reuses when no
     image-specific endpoint or key is configured (the active profile's otherwise). A source
-    picture is sent with the prompt to the provider's edit endpoint; the result is a new image,
-    validated and written like a generated one.
+    picture is sent with the prompt to the provider's edit endpoint (and to the connection's
+    ``edit_model`` when it declares one); the result is a new image, validated and written like a
+    generated one. ``quality``: the quality the request names; None uses the person's setting
+    (resolve_quality).
     """
     settings = cfg.image_generation
     if not settings.enabled:
@@ -155,7 +156,7 @@ def generate_images(
         )
 
     normalized_size = _enum_value(size, allowed=_SIZES, field="size")
-    normalized_quality = _enum_value(quality, allowed=_QUALITIES, field="quality")
+    normalized_quality = resolve_quality(settings, quality)
     normalized_background = _enum_value(
         background,
         allowed=_BACKGROUNDS,
@@ -188,8 +189,9 @@ def generate_images(
         connection=connection,
     )
     endpoint = _images_endpoint(base_url, "edits" if source else "generations")
+    model = (settings.edit_model or settings.model) if source else settings.model
     payload: dict[str, Any] = {
-        "model": settings.model,
+        "model": model,
         "prompt": clean_prompt,
         "n": count,
     }
@@ -199,7 +201,7 @@ def generate_images(
         payload["quality"] = normalized_quality
     if normalized_background != "auto":
         payload["background"] = normalized_background
-    if "gpt-image" in settings.model.casefold():
+    if "gpt-image" in model.casefold():
         payload["output_format"] = _provider_output_format(planned[0][0].suffix)
 
     safe_extra_headers = {
@@ -320,7 +322,7 @@ def generate_images(
     raw_usage = response_payload.get("usage")
     return {
         "status": "succeeded",
-        "model": settings.model,
+        "model": model,
         "count": len(images),
         "images": images,
         "output_paths": [item["path"] for item in images],
@@ -336,6 +338,25 @@ def generate_images(
     }
 
 
+def resolve_quality(settings: ImageGenerationConfig, requested: str | None) -> str:
+    """The quality a request goes out with.
+
+    A quality the request names must be one the connection accepts; the error lists those, so
+    the model can ask again or tell the person. Without one, the person's setting is used; when
+    the connection does not accept that setting, the provider chooses ("auto"), as it does when
+    the connection declares nothing else.
+    """
+    accepted = settings.qualities or IMAGE_QUALITIES
+    named = str(requested or "").strip().casefold()
+    if named:
+        if named not in accepted:
+            raise ImageGenerationError("quality must be one of: " + ", ".join(accepted))
+        return named
+    if settings.quality in accepted:
+        return settings.quality
+    return "auto"
+
+
 def _resolve_runtime(
     *,
     cfg: AppConfig,
@@ -347,6 +368,8 @@ def _resolve_runtime(
     if explicit_base_url:
         base_url = explicit_base_url
         extra_headers: dict[str, str] = {}
+        if settings.key_from == "connection" and connection is not None:
+            fallback_api_key = connection.api_key
     elif connection is not None:
         base_url = connection.base_url
         extra_headers = dict(connection.extra_headers)
@@ -357,7 +380,15 @@ def _resolve_runtime(
         extra_headers = dict(profile.extra_headers)
 
     configured_env = str(settings.api_key_env or "").strip()
-    if configured_env:
+    if settings.key_from == "account":
+        # Only the saved Alysis account key reaches the account's image service.
+        from ..account_images import saved_account_key
+
+        api_key = str(saved_account_key() or "").strip()
+    elif settings.key_from == "connection":
+        # Only the connection's own key may reach an image service of the same account.
+        api_key = str(fallback_api_key or "").strip()
+    elif configured_env:
         api_key = str(env_get(configured_env) or "").strip()
         if not api_key:
             raise ImageGenerationError(
@@ -444,13 +475,18 @@ def _bounded_response(
         if declared_length > max_bytes:
             raise ImageGenerationError(f"{label} exceeds the configured byte limit")
     body = bytearray()
+    # iter_bytes undoes any Content-Encoding (a service may gzip a large answer), so the limit
+    # applies to the decoded body, and the copy must not claim it is still encoded.
     for chunk in response.iter_bytes():
         if len(body) + len(chunk) > max_bytes:
             raise ImageGenerationError(f"{label} exceeds the configured byte limit")
         body.extend(chunk)
+    headers = httpx.Headers(response.headers)
+    for name in ("content-encoding", "content-length", "transfer-encoding"):
+        headers.pop(name, None)
     return httpx.Response(
         status_code=response.status_code,
-        headers=response.headers,
+        headers=headers,
         content=bytes(body),
         request=response.request,
         extensions=dict(response.extensions),

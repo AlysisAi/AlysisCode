@@ -162,8 +162,9 @@ def resolve_prompt_cache_policy(
     prompt_cache_retention: str | None,
     prompt_cache_namespace: str | None = None,
     cache_capability: EffectiveCacheCapability | None = None,
+    force_off: bool = False,
 ) -> ResolvedPromptCachePolicy:
-    mode = resolve_prompt_cache_mode(cfg)
+    mode = "off" if force_off else resolve_prompt_cache_mode(cfg)
     ttl = resolve_anthropic_prompt_cache_ttl(cfg)
     hosted_ttl_warning: tuple[str, ...] = ()
     if provider_key == "alysis" and protocol == "anthropic_messages" and ttl != "5m":

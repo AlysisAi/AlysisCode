@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..account_images import session_image_generation
 from ..agent import _patchable
 from ..compaction.conversation_compactor import MEMORY_MARKER, PINS_MARKER
 from ..config import (
@@ -2395,6 +2396,8 @@ def prepare_session_prompt_context(
         plugin_activation_index = _build_plugin_activation_index(session_root)
 
     session_cfg = clone_cfg(cfg)
+    # On the account gateway, pictures are what the account declares (account_images.py).
+    session_cfg.image_generation = session_image_generation(session_cfg)
     authoritative_verify_commands = _normalized_authoritative_verify_commands(
         authoritative_verification_commands
     )

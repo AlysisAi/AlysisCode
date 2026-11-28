@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from ..chat_messaging_protocol import CHAT_TOOL_SPECS
+from ..config import IMAGE_QUALITIES
 from ..desktop_connections import CONNECTION_TOOLS
 from ..desktop_terminal import TERMINAL_TOOLS
 from ..embedded_browser import BROWSER_TOOLS, BROWSER_WRITE_ACTIONS
@@ -2355,8 +2356,11 @@ _BUILTIN_TOOL_METADATA: tuple[BuiltinToolMetadata, ...] = (
                 },
                 "quality": {
                     "type": "string",
-                    "enum": ["auto", "low", "medium", "high"],
-                    "default": "auto",
+                    "enum": list(IMAGE_QUALITIES),
+                    "description": (
+                        "Leave out to use the person's picture quality setting. Set it only "
+                        "when the person asks for a quality."
+                    ),
                 },
                 "background": {
                     "type": "string",

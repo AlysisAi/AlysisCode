@@ -32,11 +32,12 @@ from pydantic import Field, field_validator, model_validator
 
 from ..cancellation import EventCancellationToken
 from ..documents.__main__ import MAX_PAGES, MAX_SOURCE_BYTES
+from ..office import SpreadsheetAuthoringError
 from . import documents
 from .artifact_validation import failed
 from .browser_images import FileImageResult, file_image
 from .files import MAX_FILE_BYTES
-from .models import FileInput, Input
+from .models import FileInput, Input, NewSeries
 from .store import TERMINAL, Conflict, NotFound
 
 OFFICE_FORMATS = ("docx", "xlsx", "pptx")
@@ -95,7 +96,8 @@ NO_SUCH_PAGE = "It has {pages} pages, so it has no page {page}; page {shown} is 
 SAVED = (
     "Saved in the Library as {what}; it shows as a file card with your reply. Look at the shown "
     "page for layout problems before calling it done (check_document with page shows another "
-    "page). These checks don't prove the content is right."
+    "page). These checks don't prove the content is right. If this file was accidental or only "
+    "for your working notes, withdraw_action with its saved ID keeps it in Library and removes its reply card."
 )
 NOT_SAVED = (
     "Nothing was saved: a check failed. Fix what the failed checks say{formulas}, then call "
@@ -145,6 +147,7 @@ class DocumentFormat(Input):
 
 
 class CreateDocument(Input):
+    new_series: NewSeries = False
     format: Format
     name: str = Field(
         min_length=1,
@@ -216,6 +219,13 @@ class EditDocument(LibraryDocument):
         description="Save the result as a separate Library file with this name. Left out, it "
         "is saved as a new version of this file.",
     )
+    page: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_PAGES,
+        description="Rendered page to show after editing. By default, show a page with a layout "
+        "issue, then the single edited slide, otherwise page 1.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -230,6 +240,10 @@ class EditDocument(LibraryDocument):
 
 
 class CheckDocument(LibraryDocument):
+    input_check: dict | None = Field(
+        default=None,
+        description="For an editable XLSX report, verify one hypothetical authoritative source edit on a temporary copy. Supply the input_check object from describe_document_format.",
+    )
     page: int | None = Field(
         default=None,
         ge=1,
@@ -291,6 +305,12 @@ def guide(format_name: str) -> dict:
         "example": copy.deepcopy(described["example"]),
         "notes": " ".join(notes),
     }
+
+
+class WorkbookRefusal(Conflict):
+    def __init__(self, error: SpreadsheetAuthoringError):
+        super().__init__(str(error))
+        self.reason_code = error.reason_code
 
 
 def _plain(error: BaseException) -> str:
@@ -373,7 +393,7 @@ class OwlDocuments:
                     root,
                     {"action": "create", "format": kind, "spec": "spec.json", "output": output},
                 )
-            output, calculation = self._calculated(root, kind, output, produced)
+            calculation = produced.get("calculation")
             outcome = self._checked(root, output, None, image_input, keep=True)
         return self._finish(
             task,
@@ -400,7 +420,12 @@ class OwlDocuments:
             "format": kind,
             "source_sha256": inspected["source_sha256"],
             "content": inspected["content"],
-            "next": INSPECTED,
+            "next": (
+                INSPECTED + " This inspection reads formula expressions. Use check_document on "
+                "this file_id to verify its displayed results; keep working formulas editable."
+                if kind == "xlsx" and inspected["content"].get("formula_count")
+                else INSPECTED
+            ),
         }
 
     def _edit(self, task, args: EditDocument, image_input):
@@ -416,9 +441,11 @@ class OwlDocuments:
             raise Conflict(OLDER_VERSION.format(name=file["name"]))
         if args.recalculate and kind != "xlsx":
             raise Conflict("Only an xlsx workbook has formulas to recalculate.")
+        revision_evidence = None
         with self._scratch(task) as root:
             source = "source." + kind
             (root / source).write_bytes(data)
+            edited_slide = None
             if args.recalculate:
                 output, calculation = self._recalculate(root, source)
                 if not calculation["formula_count"]:
@@ -430,8 +457,15 @@ class OwlDocuments:
                     root,
                     {"action": "edit", "source": source, "spec": "spec.json", "output": output},
                 )
-                output, calculation = self._calculated(root, kind, output, produced)
-            outcome = self._checked(root, output, None, image_input, keep=True)
+                calculation = produced.get("calculation")
+                revision_evidence = produced["details"].get("revision_evidence")
+                if kind == "pptx":
+                    edited_slides = produced["details"]["edited_slides"]
+                    if len(edited_slides) == 1:
+                        edited_slide = (edited_slides[0], produced["content"]["slide_count"])
+            outcome = self._checked(
+                root, output, args.page, image_input, keep=True, edited_slide=edited_slide
+            )
         return self._finish(
             task,
             outcome,
@@ -444,19 +478,30 @@ class OwlDocuments:
             if args.recalculate
             else " with a corrected spec (its expected_source_sha256 stays the same)",
             source_file_id=file["id"],
+            revision_evidence=revision_evidence,
         )
 
     def _check_file(self, task, args: CheckDocument, image_input):
         file, data, kind = self._source(task, args.file_id)
+        input_result = None
         with self._scratch(task) as root:
             source = "document." + kind
             (root / source).write_bytes(data)
+            if args.input_check is not None:
+                if kind != "xlsx":
+                    raise Conflict("An input check requires an Excel workbook.")
+                self._write_spec(root, {"input_check": args.input_check})
+                input_result = self._operate(
+                    root, {"action": "inspect", "source": source, "spec": "spec.json"}
+                )["input_check"]
             report, view, shown, _ = self._checked(root, source, args.page, image_input, keep=False)
         receipt = {
             "file_id": file["id"],
             "name": file["name"],
             "format": kind,
-            "passed": not failed(report),
+            "passed": not failed(report)
+            and (input_result is None or input_result["state"] == "passed"),
+            **({"input_check": input_result} if input_result is not None else {}),
             **_summary(report),
             **view,
             "next": CHECKED,
@@ -489,6 +534,9 @@ class OwlDocuments:
         return file, data, kind
 
     def _library_bytes(self, task, file_id: str) -> tuple[dict, bytes]:
+        from .assignment_computer import require_assignment_file
+
+        require_assignment_file(self.store, self.owner, task, file_id)
         bot_id = task["bot_id"]
         file = self.store.file(self.owner, bot_id, file_id)
         if file["size_bytes"] > MAX_FILE_BYTES:
@@ -537,16 +585,6 @@ class OwlDocuments:
             raise Conflict("spec must use finite numbers.") from None
         (root / "spec.json").write_text(text, encoding="utf-8")
 
-    def _calculated(self, root, kind, output, produced) -> tuple[str, dict | None]:
-        """A new workbook with formulas gets their results, where the engine can calculate."""
-        from ..office import office_capability_status
-
-        if kind != "xlsx" or not produced.get("content", {}).get("formula_count"):
-            return output, None
-        if office_capability_status()["calculation"]["state"] != "configured":
-            return output, None  # The check then reports formula results as not checked.
-        return self._recalculate(root, output)
-
     def _recalculate(self, root, source) -> tuple[str, dict]:
         from ..office import office_capability_status
 
@@ -571,13 +609,27 @@ class OwlDocuments:
             cancel_check=self._stop_requested,
         )
 
-    def _checked(self, root: Path, output: str, page, image_input, *, keep: bool):
+    def _checked(
+        self,
+        root: Path,
+        output: str,
+        page,
+        image_input,
+        *,
+        keep: bool,
+        edited_slide: tuple[int, int] | None = None,
+    ):
         """The engine's check of the exact output, the page to show the model, and (to keep,
         when no check failed) the checked bytes themselves."""
         from ..artifact_checks import ArtifactChecks
 
         checks = ArtifactChecks(root, cancel_check=self._stop_requested)
         report = self._engine(checks.check, output)
+        preview = report.get("preview")
+        if edited_slide and preview and preview["pageCount"] == edited_slide[1]:
+            # A converter may omit hidden slides. Only use the slide's index when pages
+            # match the deck, and keep the artifact check's own suggested problem page.
+            preview.setdefault("suggestedPage", edited_slide[0])
         data = None
         if keep and not failed(report):
             data = _relative(root, output).read_bytes()
@@ -595,6 +647,8 @@ class OwlDocuments:
             raise
         except ENGINE_ERRORS as error:
             self.token.throw_if_cancelled()
+            if isinstance(error, SpreadsheetAuthoringError):
+                raise WorkbookRefusal(error) from None
             raise Conflict(_plain(error)) from None
 
     def _stop_requested(self) -> bool:
@@ -605,8 +659,7 @@ class OwlDocuments:
         return self._stopped
 
     def _page(self, root: Path, report: dict, page: int | None, image_input: bool):
-        """Which rendered page to show: the one asked for, else the first with text outside
-        it, else the first; and the image of it for a model that can see images."""
+        """Show the requested page, otherwise prioritize observed layout issues."""
         preview = report.get("preview")
         if not preview or not preview.get("pages"):
             return {"page_image": NOT_RENDERED}, None
@@ -614,7 +667,10 @@ class OwlDocuments:
         view = {}
         shown = page
         if shown is None:
-            shown = next((p["page"] for p in pages if p["characters_outside_page"]), 1)
+            shown = next(
+                (p["page"] for p in pages if p["characters_outside_page"]),
+                preview.get("suggestedPage", 1),
+            )
         elif shown > len(pages):
             view["page_note"] = NO_SUCH_PAGE.format(pages=len(pages), page=shown, shown=1)
             shown = 1
@@ -652,6 +708,7 @@ class OwlDocuments:
         tool,
         again,
         source_file_id=None,
+        revision_evidence=None,
     ):
         report, view, shown, data = outcome
         receipt = {
@@ -697,8 +754,10 @@ class OwlDocuments:
             **receipt,
             "name": saved["name"],
             "version": saved["revision"],
+            "series_id": saved["series_id"],
             "bytes": saved["size_bytes"],
             "sha256": saved["sha256"],
+            **({"revision_evidence": revision_evidence} if revision_evidence else {}),
             "next": SAVED.format(what=what),
         }
         return self._shown(receipt, shown, saved["name"], saved=True)
@@ -764,6 +823,14 @@ def _summary(report: dict) -> dict:
             summary["pages_with_text_outside"] = outside
     if report.get("calculation"):
         summary["formula_check"] = report["calculation"]
+    if report.get("textBoxOverlaps"):
+        summary["text_box_overlaps"] = report["textBoxOverlaps"]
+    if report.get("headingFit"):
+        summary["heading_fit"] = report["headingFit"]
+    if report.get("headerContrast"):
+        summary["header_contrast"] = report["headerContrast"]
+    if report.get("printCoverage"):
+        summary["print_coverage"] = report["printCoverage"]
     return summary
 
 
@@ -777,6 +844,8 @@ def _calculation(result: dict) -> dict:
             "errors",
             "results",
             "results_truncated",
+            "guidance",
+            "input_check",
         )
         if key in result
     }

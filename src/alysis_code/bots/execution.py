@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ..agent.session import create_session
-from ..agent.tools_assembly import ToolDef
+from ..agent.tool_definition import ToolDef
 from ..config import AppConfig
 from ..execution_deadline import ExecutionDeadline
 from ..llm.types import LLMError, LLMOutputLimitError
@@ -678,6 +678,8 @@ class TaskClient:
                 updates = runtime.background.updates(task["id"])
                 _, references_changed = runtime._refresh_memory_context(task, wire, reference_state)
                 if updates or self._discards_for(references_changed):
+                    # Set aside to take in the change: the draft the person sees goes with it.
+                    runtime.reply_review.withdraw_draft(task)
                     self.corrections.extend(updates)
                     continue
                 if verdict.decision == "repair":

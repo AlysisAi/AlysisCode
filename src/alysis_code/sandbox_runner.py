@@ -1954,6 +1954,10 @@ def seatbelt_scope_has_no_remote_route(scope: object) -> bool:
     cannot stage a program for a later Git either. Other backends, the host
     and unknown objects are never certified.
     """
+    return _seatbelt_command_scope(scope, allow_network=False)
+
+
+def _seatbelt_command_scope(scope: object, *, allow_network: bool) -> bool:
     if isinstance(scope, ShellSandboxSettings):
         try:
             choice = select_shell_sandbox_backend(scope)
@@ -1968,8 +1972,12 @@ def seatbelt_scope_has_no_remote_route(scope: object) -> bool:
     elif not isinstance(scope, SeatbeltShellRunner):
         return False
     return (
-        scope.network == "off"
-        and scope.network_domains is None
+        (
+            scope.network == "off"
+            and scope.network_domains is None
+            or allow_network
+            and scope.network == "on"
+        )
         and not scope.private_network_endpoints
         and not scope.unix_sockets
         and not scope.additional_read_files
@@ -1981,6 +1989,20 @@ def seatbelt_scope_has_no_remote_route(scope: object) -> bool:
         and scope.clear_env
         and scope.protect_repo_meta
     )
+
+
+def network_review_backend(scope: object) -> str | None:
+    """Identify strict native runners eligible for per-command internet review."""
+    from .windows_mxc import WindowsMxcRunner, mxc_scope_bounds_command
+
+    settings = scope.settings if type(scope) is WindowsMxcRunner else scope
+    if getattr(settings, "preview_access", None) != "auto":
+        return None
+    if _seatbelt_command_scope(scope, allow_network=True):
+        return "seatbelt"
+    if mxc_scope_bounds_command(scope, reviewed_access=True):
+        return "windows-mxc"
+    return None
 
 
 def contained_backend(scope: object, *, reviewed_access: bool = False) -> str | None:

@@ -79,9 +79,10 @@ from .browser_tools import (
 from .browser_view import STALE_PAGE, observe, page_view_state, readable_content, resolve_refs
 from .browser_view import _rendered_text as _rendered_text
 from .browser_view import _visible_links as _visible_links
-from .compute import ComputeCreationRefused
+from .compute import ComputeCreationRefused, ComputeError
 from .computer import ComputerLocks, ComputerViews, computer_operation
 from .computer_context import opening_for
+from .computer_readiness import start_failed
 from .files import MAX_FILE_BYTES
 from .models import tool_input
 from .tool_parameters import tool_parameters
@@ -1413,6 +1414,13 @@ class BrowserComputers:
                     except ComputeCreationRefused as exc:
                         self.views.release_claim(self.owner, bot_id, task["id"], "browser")
                         return exc.receipt()
+                    except ComputeError as exc:
+                        # A computer that did not start leaves the task going without it.
+                        receipt = start_failed(exc)
+                        if receipt is None:
+                            raise
+                        self.views.release_claim(self.owner, bot_id, task["id"], "browser")
+                        return receipt
                     except BrowserStartupCleanupError as exc:
                         with self._lock:
                             self._computers[bot_id] = _Computer(

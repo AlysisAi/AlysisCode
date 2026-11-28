@@ -164,7 +164,10 @@ class QueuedMessages:
             }
 
     def _edit(self, db, task: dict, revision: int, message: str) -> None:
-        if not message.strip() and not self.store._attached_file_ids(db, task["id"]):
+        if not message.strip() and (
+            task["config"].get("interactive_target")
+            or not self.store._attached_file_ids(db, task["id"])
+        ):
             raise Conflict("Write the message, or cancel it.")
         now = time.time()
         # Inside this write transaction the task is still queued: the worker can't start it

@@ -33,6 +33,7 @@ def test_profiles_report_only_implemented_bots_protocols(tmp_path, monkeypatch):
         }
         for name, protocol in (
             ("supported", "openai_compat"),
+            ("responses", "openai_responses"),
             ("other-protocol", "gemini_generate_content"),
         )
     }
@@ -40,7 +41,53 @@ def test_profiles_report_only_implemented_bots_protocols(tmp_path, monkeypatch):
     save_config(cfg)
     available = {item["name"]: item["available"] for item in profiles()["profiles"]}
     assert available["supported"] is True
+    assert available["responses"] is True
     assert available["other-protocol"] is False
+
+
+def test_reading_the_model_list_does_not_load_the_owls_service(tmp_path, monkeypatch):
+    """The model list is read before owls on this computer start; it answers on its own."""
+    monkeypatch.setenv("ALYSIS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ALYSIS_LOCAL_TEST_KEY", "placeholder")
+    cfg = AppConfig(model="test-model", base_url="https://models.example.invalid/v1")
+    cfg.extra_fields["profiles"] = {
+        name: {
+            "protocol": protocol,
+            "base_url": cfg.base_url,
+            "default_model": model,
+            "api_key_env": "ALYSIS_LOCAL_TEST_KEY",
+        }
+        for name, protocol, model in (
+            ("chat-completions", "openai_compat", "μοντέλο-δοκιμής"),
+            ("messages", "anthropic_messages", "テストモデル"),
+            ("other-protocol", "gemini_generate_content", "test-model"),
+        )
+    }
+    cfg.extra_fields["active_profile"] = "messages"
+    save_config(cfg)
+    # A fresh process, as the app runs it, so nothing an earlier test imported counts.
+    script = (
+        "import json, sys\n"
+        "from alysis_code.bots.local_service import profiles\n"
+        "print(json.dumps({'profiles': profiles(),"
+        " 'service_loaded': 'alysis_code.bots.app' in sys.modules}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    answer = json.loads(result.stdout)
+    assert answer["service_loaded"] is False
+    listed = {item["name"]: item for item in answer["profiles"]["profiles"]}
+    assert answer["profiles"]["active"] == "messages"
+    assert listed["chat-completions"] == {
+        "name": "chat-completions",
+        "model": "μοντέλο-δοκιμής",
+        "available": True,
+    }
+    assert listed["messages"]["available"] is True
+    assert listed["messages"]["model"] == "テストモデル"
+    assert listed["other-protocol"]["available"] is False
 
 
 def test_service_auth_storage_restart_and_parent_lifetime(tmp_path, monkeypatch):
